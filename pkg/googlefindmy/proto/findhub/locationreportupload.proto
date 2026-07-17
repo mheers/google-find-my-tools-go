@@ -1,0 +1,54 @@
+//
+//  google-find-my-tools-go - Go reimplementation of GoogleFindMyTools
+//  Copyright © 2024 Leon Böttger. All rights reserved.
+//  Copyright © 2024 Marcel Heers <marcel@heers.it>
+//
+//  This program is free software: you can redistribute it and/or modify
+//  it under the terms of the GNU General Public License as published by
+//  the Free Software Foundation, either version 3 of the License, or
+//  (at your option) any later version.
+//
+//  This program is distributed in the hope that it will be useful,
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//  GNU General Public License for more details.
+//
+//  You should have received a copy of the GNU General Public License
+//  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+
+syntax = "proto3";
+
+option go_package = "github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/proto/findhub;findhub";
+import "findhub/common.proto";
+
+message LocationReportsUpload {
+    repeated Report reports = 1;
+    ClientMetadata clientMetadata = 2;
+    uint64 random1 = 3;
+    uint64 random2 = 4;
+}
+
+message Report {
+    Advertisement advertisement = 1;
+    Time time = 4;
+    LocationReport location = 6;
+}
+
+message Advertisement {
+    Identifier identifier = 5;
+    uint32 unwantedTrackingModeEnabled = 6;
+}
+
+message Identifier {
+    bytes truncatedEid = 6;
+    bytes canonicDeviceId = 7;
+}
+
+message ClientMetadata {
+    ClientVersionInformation version = 2;
+}
+
+message ClientVersionInformation {
+    string playServicesVersion = 1;
+}

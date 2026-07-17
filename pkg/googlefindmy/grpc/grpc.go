@@ -1,0 +1,49 @@
+// Package grpc provides minimal gRPC message framing used by the Spot API.
+//
+// The Spot service is called over HTTP/2 with the application/grpc content
+// type. Each message is prefixed by a single "compressed" flag byte (0 =
+// uncompressed) followed by a big-endian uint32 length and the raw payload.
+// This mirrors Python SpotApi/grpc_parser.py and avoids pulling in the full
+// grpc-go stack for a handful of unary calls.
+package grpc
+
+import (
+	"encoding/binary"
+	"fmt"
+	"io"
+)
+
+// Wrap prepends the gRPC framing header to payload.
+func Wrap(payload []byte) []byte {
+	out := make([]byte, 5+len(payload))
+	out[0] = 0 // not compressed
+	binary.BigEndian.PutUint32(out[1:5], uint32(len(payload)))
+	copy(out[5:], payload)
+	return out
+}
+
+// Unwrap extracts the inner payload from a gRPC-framed message.
+func Unwrap(framed []byte) ([]byte, error) {
+	if len(framed) < 5 {
+		return nil, fmt.Errorf("grpc: frame too short (%d bytes)", len(framed))
+	}
+	length := binary.BigEndian.Uint32(framed[1:5])
+	if uint32(len(framed)-5) < length {
+		return nil, fmt.Errorf("grpc: frame length %d exceeds available %d", length, len(framed)-5)
+	}
+	return framed[5 : 5+int(length)], nil
+}
+
+// ReadFrame reads a single gRPC-framed message from r.
+func ReadFrame(r io.Reader) ([]byte, error) {
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(r, header); err != nil {
+		return nil, fmt.Errorf("grpc: read header: %w", err)
+	}
+	length := binary.BigEndian.Uint32(header[1:5])
+	body := make([]byte, length)
+	if _, err := io.ReadFull(r, body); err != nil {
+		return nil, fmt.Errorf("grpc: read body: %w", err)
+	}
+	return body, nil
+}

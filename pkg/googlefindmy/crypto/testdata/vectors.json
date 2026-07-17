@@ -1,0 +1,84 @@
+{
+  "identity_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "eids": [
+    {
+      "timestamp": 8704000,
+      "eid": "9d8188455646a1b02ef769bf9845f095c1e79499"
+    },
+    {
+      "timestamp": 8705024,
+      "eid": "f0652edad71237b734b1f5968d90228c6055cffd"
+    },
+    {
+      "timestamp": 8706048,
+      "eid": "5c050d06eb5c313943b1f006adb30c28e4bee2c4"
+    },
+    {
+      "timestamp": 8707072,
+      "eid": "0b81e1fe1ed6039c82b97af3953b262e88e70793"
+    },
+    {
+      "timestamp": 8708096,
+      "eid": "3fd1d47c8e2cad0d1ed1832c6bd3394254819647"
+    },
+    {
+      "timestamp": 8709120,
+      "eid": "04e1e7c0a765f8c8b1e836f0d298769de7348f74"
+    },
+    {
+      "timestamp": 8710144,
+      "eid": "36bd6ceec1e19700708d742b3cbbff1db2e148fe"
+    },
+    {
+      "timestamp": 8711168,
+      "eid": "ac6536530af41c5677f32d7c7459c7ec3e1dab41"
+    }
+  ],
+  "foreign_tracker": [
+    {
+      "timestamp": 8704000,
+      "eid": "9d8188455646a1b02ef769bf9845f095c1e79499",
+      "encrypted_and_tag": "a6ca506bae494c4c153758b91d3ff13dd27586d4cb7a5b9c766e6445feffba",
+      "sx": "8e0a872d60f3feb61619e110d9e29b46e43f5719",
+      "location": "0102030405060708090a0b0c0d0e0f"
+    },
+    {
+      "timestamp": 8705024,
+      "eid": "f0652edad71237b734b1f5968d90228c6055cffd",
+      "encrypted_and_tag": "407d957a9156f6cc5dbc872d9341eb67a0fc283a48c38639674ed0d771b49f",
+      "sx": "be86eedd4a9f608a5b3bc4f0e41aadb974fac40a",
+      "location": "0102030405060708090a0b0c0d0e0f"
+    },
+    {
+      "timestamp": 8706048,
+      "eid": "5c050d06eb5c313943b1f006adb30c28e4bee2c4",
+      "encrypted_and_tag": "ad05ec0ec47d61ce62eb5867391506d61e3d662e16815f593d5e05d83fcca7",
+      "sx": "51ad733cb23a72814df384b827ef03ec9eb85149",
+      "location": "0102030405060708090a0b0c0d0e0f"
+    },
+    {
+      "timestamp": 8707072,
+      "eid": "0b81e1fe1ed6039c82b97af3953b262e88e70793",
+      "encrypted_and_tag": "a986848e69f63b14b711627176ff447694ba7aaff3c2bad58320a774c09fb4",
+      "sx": "5553ff619b162956bb1e4ca33f35eed68d7ad885",
+      "location": "0102030405060708090a0b0c0d0e0f"
+    }
+  ],
+  "eax": {
+    "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "nonce": "00112233445566778899aabb",
+    "message": "68656c6c6f2065617820776f726c64",
+    "ciphertext": "256a18a5b048ea281236ae4048afee",
+    "tag": "4387865273979c3474812a2c1ad216f0"
+  },
+  "key_derivation": {
+    "identity_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "recovery": "8b44d96f214304bc",
+    "ringing": "5728705214326174",
+    "tracking": "944c533876f9de37"
+  },
+  "truncated_sha256": {
+    "input": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "op_01": "8b44d96f214304bc"
+  }
+}

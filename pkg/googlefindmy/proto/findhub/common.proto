@@ -1,0 +1,61 @@
+//
+//  google-find-my-tools-go - Go reimplementation of GoogleFindMyTools
+//  Copyright © 2024 Leon Böttger. All rights reserved.
+//  Copyright © 2024 Marcel Heers <marcel@heers.it>
+//
+//  This program is free software: you can redistribute it and/or modify
+//  it under the terms of the GNU General Public License as published by
+//  the Free Software Foundation, either version 3 of the License, or
+//  (at your option) any later version.
+//
+//  This program is distributed in the hope that it will be useful,
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//  GNU General Public License for more details.
+//
+//  You should have received a copy of the GNU General Public License
+//  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+
+syntax = "proto3";
+
+option go_package = "github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/proto/findhub;findhub";
+
+message Time {
+    uint32 seconds = 1;
+    uint32 nanos = 2;
+}
+
+message LocationReport {
+  SemanticLocation semanticLocation = 5;
+  GeoLocation geoLocation = 10;
+  Status status = 11;
+}
+
+message SemanticLocation {
+  string locationName = 1;
+}
+
+enum Status {
+  SEMANTIC = 0;
+  LAST_KNOWN = 1;
+  CROWDSOURCED = 2;
+  AGGREGATED = 3;
+}
+
+message GeoLocation {
+  EncryptedReport encryptedReport = 1;
+  uint32 deviceTimeOffset = 2;
+  float accuracy = 3;
+}
+
+message EncryptedReport {
+    bytes publicKeyRandom = 1;
+    bytes encryptedLocation = 2;
+    bool isOwnReport = 3;
+}
+
+message GetEidInfoForE2eeDevicesRequest {
+    int32 ownerKeyVersion = 1;
+    bool hasOwnerKeyVersion = 2;
+}
