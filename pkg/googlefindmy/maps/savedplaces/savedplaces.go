@@ -1,0 +1,289 @@
+// Package savedplaces implements the Google Maps saved-places HTTP API client.
+// Replaces the now-deleted findhub-tracker/internal/poi package.
+package savedplaces
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+)
+
+// Place is a saved place entry from a Google Maps list.
+type Place struct {
+	ID      string  `json:"id"`
+	Name    string  `json:"name"`
+	Address string  `json:"address"`
+	Lat     float64 `json:"lat"`
+	Lon     float64 `json:"lon"`
+	Notes   string  `json:"notes,omitempty"`
+}
+
+// List is a Google Maps saved list containing places.
+type List struct {
+	ID     string  `json:"id"`
+	Name   string  `json:"name"`
+	Places []Place `json:"places"`
+}
+
+// ListSpec identifies a saved list. Name is optional and is used only as a
+// fallback when the API response does not include the list name.
+type ListSpec struct {
+	ID   string
+	Name string
+}
+
+var (
+	listPathPattern  = regexp.MustCompile(`/maps/placelists/list/([A-Za-z0-9_-]+)`)
+	listDataPattern  = regexp.MustCompile(`!2s([A-Za-z0-9_-]+)!`)
+	rawListIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+)
+
+// ParseListSpecs extracts saved-list IDs from copied Maps URLs or raw IDs.
+// Each non-empty line may be a URL, a raw ID, or "Name<TAB>URL".
+func ParseListSpecs(input string) ([]ListSpec, error) {
+	seen := make(map[string]int)
+	var specs []ListSpec
+	for lineNumber, line := range strings.Split(input, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		name, value := parseListInputLine(line)
+		id, err := extractListID(value)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", lineNumber+1, err)
+		}
+		if index, ok := seen[id]; ok {
+			if specs[index].Name == "" && name != "" {
+				specs[index].Name = name
+			}
+			continue
+		}
+		seen[id] = len(specs)
+		specs = append(specs, ListSpec{ID: id, Name: name})
+	}
+	if len(specs) == 0 {
+		return nil, fmt.Errorf("no saved-list URLs or IDs found")
+	}
+	return specs, nil
+}
+
+func parseListInputLine(line string) (name, value string) {
+	if fields := strings.SplitN(line, "\t", 2); len(fields) == 2 {
+		return strings.TrimSpace(fields[0]), strings.TrimSpace(fields[1])
+	}
+	return "", line
+}
+
+func extractListID(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if match := listPathPattern.FindStringSubmatch(value); len(match) == 2 {
+		return match[1], nil
+	}
+	if match := listDataPattern.FindStringSubmatch(value); len(match) == 2 {
+		return match[1], nil
+	}
+	if parsed, err := url.Parse(value); err == nil && parsed.Path != "" {
+		if match := listPathPattern.FindStringSubmatch(parsed.Path); len(match) == 2 {
+			return match[1], nil
+		}
+	}
+	if rawListIDPattern.MatchString(value) {
+		return value, nil
+	}
+	return "", fmt.Errorf("could not extract a saved-list ID from %q", value)
+}
+
+// Client calls the Google Maps saved-place entitylist API.
+type Client struct {
+	cookies map[string]string
+	hc      *http.Client
+	apiURL  string
+}
+
+// NewClient creates a saved-places client with the given cookies.
+func NewClient(cookies map[string]string) *Client {
+	return &Client{
+		cookies: cookies,
+		hc:      http.DefaultClient,
+		apiURL:  "https://www.google.com/maps/preview/entitylist",
+	}
+}
+
+// WithHTTPClient sets a custom HTTP client (useful for testing).
+func (c *Client) WithHTTPClient(hc *http.Client) *Client {
+	c.hc = hc
+	return c
+}
+
+// WithAPIURL sets a custom API base URL (useful for testing).
+func (c *Client) WithAPIURL(u string) *Client {
+	c.apiURL = u
+	return c
+}
+
+// FetchList fetches a single saved list and returns its places.
+func (c *Client) FetchList(ctx context.Context, spec ListSpec) (List, error) {
+	places, apiName, err := c.fetchListViaHTTP(ctx, spec.ID)
+	if err != nil {
+		return List{}, fmt.Errorf("fetch list %q: %w", spec.ID, err)
+	}
+	name := apiName
+	if name == "" {
+		name = spec.Name
+	}
+	return List{ID: spec.ID, Name: name, Places: places}, nil
+}
+
+// FetchLists fetches multiple saved lists. Errors for individual lists are
+// logged and skipped; the returned slice contains only successful results.
+func (c *Client) FetchLists(ctx context.Context, specs []ListSpec) ([]List, error) {
+	var lists []List
+	for _, spec := range specs {
+		list, err := c.FetchList(ctx, spec)
+		if err != nil {
+			slog.Warn("HTTP fetch failed", "id", spec.ID, "err", err)
+			continue
+		}
+		slog.Info("HTTP fetch", "name", list.Name, "places", len(list.Places))
+		lists = append(lists, list)
+	}
+	return lists, nil
+}
+
+func (c *Client) fetchListViaHTTP(ctx context.Context, listID string) ([]Place, string, error) {
+	queryURL := fmt.Sprintf(
+		"%s/getlist?authuser=0&hl=en&gl=us&pb=!1m6!1s%s!2e3!3m1!1e1!3m1!1e9!2e2!3e2!4i500",
+		c.apiURL, listID,
+	)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, queryURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
+
+	for name, value := range c.cookies {
+		req.AddCookie(&http.Cookie{
+			Name:   name,
+			Value:  value,
+			Domain: ".google.com",
+			Path:   "/",
+		})
+	}
+
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, "", fmt.Errorf("HTTP status %s", resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
+	}
+
+	text := string(body)
+	if strings.HasPrefix(text, ")]}'") {
+		if idx := strings.Index(text, "\n"); idx >= 0 {
+			text = text[idx+1:]
+		}
+	}
+
+	slog.Info("entitylist response", "size", len(text), "prefix", text[:min(200, len(text))])
+
+	var data []any
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
+		return nil, "", fmt.Errorf("parse JSON: %w (text: %s)", err, text[:min(200, len(text))])
+	}
+
+	places, listName := parseEntityList(data)
+	return places, listName, nil
+}
+
+func parseEntityList(data []any) ([]Place, string) {
+	if len(data) > 0 {
+		if inner, ok := data[0].([]any); ok {
+			data = inner
+		}
+	}
+
+	var listName string
+	if len(data) > 4 {
+		if name, ok := data[4].(string); ok {
+			listName = name
+		}
+	}
+
+	slog.Info("parsing entity list", "entries", len(data), "listName", listName)
+
+	var places []Place
+	seen := map[string]bool{}
+
+	// data[8] = array of place entries (one per place)
+	if len(data) > 8 {
+		if placeList, ok := data[8].([]any); ok {
+			for _, item := range placeList {
+				placeArr, _ := item.([]any)
+				if placeArr == nil || len(placeArr) < 3 {
+					continue
+				}
+
+				name, _ := placeArr[2].(string)
+				if name == "" || strings.Count(name, ",") > 2 {
+					continue
+				}
+
+				var address, note string
+				var lat, lon float64
+
+				if meta, ok := placeArr[1].([]any); ok {
+					if len(meta) >= 5 {
+						if a, ok := meta[4].(string); ok {
+							address = a
+						}
+					}
+					if len(meta) >= 6 {
+						if coords, ok := meta[5].([]any); ok && len(coords) >= 4 {
+							lat, _ = coords[2].(float64)
+							lon, _ = coords[3].(float64)
+						}
+					}
+				}
+				if len(placeArr) > 3 {
+					note, _ = placeArr[3].(string)
+				}
+
+				if lat == 0 && lon == 0 {
+					continue
+				}
+
+				key := fmt.Sprintf("%s_%.6f_%.6f", name, lat, lon)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+
+				places = append(places, Place{
+					Name:    name,
+					Address: address,
+					Notes:   note,
+					Lat:     lat,
+					Lon:     lon,
+				})
+			}
+		}
+	}
+
+	return places, listName
+}
