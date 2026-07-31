@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/auth"
 )
@@ -76,7 +77,7 @@ func TestParseEntityList(t *testing.T) {
 		[]any{
 			nil, nil, nil, nil, "Favorites", nil, nil, nil,
 			[]any{
-				[]any{nil, []any{nil, nil, "", nil, "123 Main St", []any{nil, nil, 52.5, 13.4}}, "Cafe", "Try the cake"},
+				[]any{nil, []any{nil, nil, "", nil, "123 Main St", []any{nil, nil, 52.5, 13.4}}, "Cafe", "Try the cake", nil, nil, nil, nil, []any{[]any{1}, []any{"id"}}, []any{1659706944.0, 322471000.0}, []any{1659706944.0, 322471000.0}},
 			},
 		},
 	}
@@ -94,6 +95,23 @@ func TestParseEntityList(t *testing.T) {
 	}
 	if place.Lat != 52.5 || place.Lon != 13.4 {
 		t.Fatalf("unexpected coordinates: %v, %v", place.Lat, place.Lon)
+	}
+	wantCreatedAt := time.Unix(1659706944, 322471000).UTC()
+	if place.CreatedAt == nil || !place.CreatedAt.Equal(wantCreatedAt) {
+		t.Fatalf("created_at = %v, want %v", place.CreatedAt, wantCreatedAt)
+	}
+}
+
+func TestParseTimestampRejectsMalformedValues(t *testing.T) {
+	for _, value := range []any{
+		[]any{float64(1)},
+		[]any{"1", float64(0)},
+		[]any{float64(1), float64(-1)},
+		[]any{float64(1), float64(1e9)},
+	} {
+		if got := parseTimestamp(value); got != nil {
+			t.Errorf("parseTimestamp(%#v) = %v, want nil", value, got)
+		}
 	}
 }
 

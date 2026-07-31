@@ -12,16 +12,18 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Place is a saved place entry from a Google Maps list.
 type Place struct {
-	ID      string  `json:"id"`
-	Name    string  `json:"name"`
-	Address string  `json:"address"`
-	Lat     float64 `json:"lat"`
-	Lon     float64 `json:"lon"`
-	Notes   string  `json:"notes,omitempty"`
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Address   string     `json:"address"`
+	Lat       float64    `json:"lat"`
+	Lon       float64    `json:"lon"`
+	Notes     string     `json:"notes,omitempty"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
 }
 
 // List is a Google Maps saved list containing places.
@@ -246,6 +248,7 @@ func parseEntityList(data []any) ([]Place, string) {
 
 				var address, note string
 				var lat, lon float64
+				var createdAt *time.Time
 
 				if meta, ok := placeArr[1].([]any); ok {
 					if len(meta) >= 5 {
@@ -263,6 +266,10 @@ func parseEntityList(data []any) ([]Place, string) {
 				if len(placeArr) > 3 {
 					note, _ = placeArr[3].(string)
 				}
+				// Google stores place timestamps as [Unix seconds, nanoseconds].
+				if len(placeArr) > 9 {
+					createdAt = parseTimestamp(placeArr[9])
+				}
 
 				if lat == 0 && lon == 0 {
 					continue
@@ -275,15 +282,33 @@ func parseEntityList(data []any) ([]Place, string) {
 				seen[key] = true
 
 				places = append(places, Place{
-					Name:    name,
-					Address: address,
-					Notes:   note,
-					Lat:     lat,
-					Lon:     lon,
+					Name:      name,
+					Address:   address,
+					Notes:     note,
+					Lat:       lat,
+					Lon:       lon,
+					CreatedAt: createdAt,
 				})
 			}
 		}
 	}
 
 	return places, listName
+}
+
+func parseTimestamp(value any) *time.Time {
+	parts, ok := value.([]any)
+	if !ok || len(parts) < 2 {
+		return nil
+	}
+	seconds, ok := parts[0].(float64)
+	if !ok || seconds != float64(int64(seconds)) {
+		return nil
+	}
+	nanos, ok := parts[1].(float64)
+	if !ok || nanos != float64(int64(nanos)) || nanos < 0 || nanos >= 1e9 {
+		return nil
+	}
+	createdAt := time.Unix(int64(seconds), int64(nanos)).UTC()
+	return &createdAt
 }
