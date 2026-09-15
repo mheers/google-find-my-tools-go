@@ -2,6 +2,7 @@ package fcm
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
@@ -18,6 +19,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/hkdf"
 	"google.golang.org/protobuf/proto"
@@ -136,6 +138,8 @@ func encryptTestPush(t *testing.T, creds *FCMCredentials, clientPriv *ecdh.Priva
 	raw := gcm.Seal(nil, nonce, padded, nil)
 
 	msg := &fcmpb.DataMessageStanza{
+		From:         proto.String("test-sender"),
+		Category:     proto.String("com.google.android.apps.adm"),
 		PersistentId: proto.String("persistent-1"),
 		AppData: []*fcmpb.AppData{
 			{Key: proto.String("crypto-key"), Value: proto.String("dh=" + base64.URLEncoding.EncodeToString(serverPub))},
@@ -214,10 +218,8 @@ func TestHandleDataMessageDoesNotLogAppData(t *testing.T) {
 	defer restore()
 
 	var got []byte
-	var gotID string
-	handleDataMessage(creds, push.msg, func(payload []byte, persistentID string) {
+	gotID := handleDataMessage(creds, push.msg, func(payload []byte, persistentID string) {
 		got = payload
-		gotID = persistentID
 	})
 
 	if !bytes.Equal(got, want) {
@@ -254,8 +256,8 @@ func TestDecodeVarint32RejectsOverflow(t *testing.T) {
 
 func TestReadMsgRejectsOversizedPayload(t *testing.T) {
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 
 	c := &MCSClient{conn: client, firstMessage: false}
 	go func() {
@@ -265,5 +267,179 @@ func TestReadMsgRejectsOversizedPayload(t *testing.T) {
 
 	if _, err := c.readMsg(); err == nil {
 		t.Fatal("expected an error for a payload larger than the limit")
+	}
+}
+
+func TestReadMsgRejectsUnsupportedVersion(t *testing.T) {
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
+
+	c := &MCSClient{conn: client, firstMessage: true}
+	go func() {
+		_, _ = server.Write([]byte{40, 0})
+	}()
+
+	if _, err := c.readMsg(); err == nil {
+		t.Fatal("expected an error for an unsupported protocol version")
+	}
+}
+
+func TestSendSelectiveAck(t *testing.T) {
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
+
+	c := &MCSClient{conn: client, ctx: context.Background(), firstMessage: false}
+
+	sendErr := make(chan error, 1)
+	go func() { sendErr <- sendSelectiveAck(c, "persistent-1") }()
+
+	var tag [1]byte
+	if _, err := io.ReadFull(server, tag[:]); err != nil {
+		t.Fatalf("read tag: %v", err)
+	}
+	if tag[0] != byte(tags["*fcm.IqStanza"]) {
+		t.Fatalf("tag = %d, want %d", tag[0], tags["*fcm.IqStanza"])
+	}
+	size, err := decodeVarint32(server)
+	if err != nil {
+		t.Fatalf("read size: %v", err)
+	}
+	payload := make([]byte, size)
+	if _, err := io.ReadFull(server, payload); err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	if err := <-sendErr; err != nil {
+		t.Fatalf("sendSelectiveAck: %v", err)
+	}
+
+	iq := &fcmpb.IqStanza{}
+	if err := proto.Unmarshal(payload, iq); err != nil {
+		t.Fatalf("unmarshal iq: %v", err)
+	}
+	if iq.GetExtension().GetId() != int32(mcsSelectiveAckID) {
+		t.Fatalf("extension id = %d, want %d", iq.GetExtension().GetId(), mcsSelectiveAckID)
+	}
+	ack := &fcmpb.SelectiveAck{}
+	if err := proto.Unmarshal(iq.GetExtension().GetData(), ack); err != nil {
+		t.Fatalf("unmarshal selective ack: %v", err)
+	}
+	if len(ack.GetId()) != 1 || ack.GetId()[0] != "persistent-1" {
+		t.Fatalf("selective ack ids = %v, want [persistent-1]", ack.GetId())
+	}
+}
+
+func TestListenWithoutConnect(t *testing.T) {
+	c := NewMCSClient(&FCMCredentials{GCM: &GCMCredentials{}}, nil)
+	if err := c.Listen(); err == nil {
+		t.Fatal("expected an error when Listen is called before Connect")
+	}
+}
+
+// TestListenAcksDataMessages feeds a real (encrypted) data message into the
+// receive loop and asserts that a selective ACK for its persistent ID is sent
+// back and the handler receives the plaintext.
+func TestListenAcksDataMessages(t *testing.T) {
+	creds, clientPriv := testPushCredentials(t)
+	want := []byte(`{"location":"48.1,11.5"}`)
+	push := encryptTestPush(t, creds, clientPriv, want)
+
+	client, server := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer func() { _ = server.Close() }()
+
+	c := NewMCSClient(creds, func(payload []byte, persistentID string) {
+		if !bytes.Equal(payload, want) {
+			t.Errorf("handler payload = %q, want %q", payload, want)
+		}
+		if persistentID != "persistent-1" {
+			t.Errorf("handler persistent id = %q, want persistent-1", persistentID)
+		}
+	})
+	c.mu.Lock()
+	c.ctx = ctx
+	c.conn = client
+	c.firstMessage = false
+	c.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() { done <- c.Listen() }()
+
+	payload, err := proto.Marshal(push.msg)
+	if err != nil {
+		t.Fatalf("marshal data message: %v", err)
+	}
+	frame := append([]byte{byte(tags["*fcm.DataMessageStanza"])}, encodeVarint32(uint32(len(payload)))...)
+	frame = append(frame, payload...)
+	if _, err := server.Write(frame); err != nil {
+		t.Fatalf("write data message: %v", err)
+	}
+
+	// The receive loop must answer with an IqStanza (tag 7) carrying a
+	// selective ACK for persistent-1.
+	var tag [1]byte
+	if _, err := io.ReadFull(server, tag[:]); err != nil {
+		t.Fatalf("read ack tag: %v", err)
+	}
+	if tag[0] != byte(tags["*fcm.IqStanza"]) {
+		t.Fatalf("ack tag = %d, want %d", tag[0], tags["*fcm.IqStanza"])
+	}
+	size, err := decodeVarint32(server)
+	if err != nil {
+		t.Fatalf("read ack size: %v", err)
+	}
+	ackPayload := make([]byte, size)
+	if _, err := io.ReadFull(server, ackPayload); err != nil {
+		t.Fatalf("read ack payload: %v", err)
+	}
+	iq := &fcmpb.IqStanza{}
+	if err := proto.Unmarshal(ackPayload, iq); err != nil {
+		t.Fatalf("unmarshal ack: %v", err)
+	}
+	ack := &fcmpb.SelectiveAck{}
+	if err := proto.Unmarshal(iq.GetExtension().GetData(), ack); err != nil {
+		t.Fatalf("unmarshal selective ack: %v", err)
+	}
+	if len(ack.GetId()) != 1 || ack.GetId()[0] != "persistent-1" {
+		t.Fatalf("selective ack ids = %v, want [persistent-1]", ack.GetId())
+	}
+	if ids := c.persistentIDs(); len(ids) != 1 || ids[0] != "persistent-1" {
+		t.Fatalf("tracked persistent ids = %v, want [persistent-1]", ids)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Listen did not return after cancellation")
+	}
+}
+
+func TestListenCloseConcurrent(t *testing.T) {
+	creds, _ := testPushCredentials(t)
+	client, server := net.Pipe()
+	defer func() { _ = server.Close() }()
+
+	c := NewMCSClient(creds, nil)
+	c.mu.Lock()
+	c.ctx = context.Background()
+	c.conn = client
+	c.firstMessage = false
+	c.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() { done <- c.Listen() }()
+
+	// Let Listen block on the first read, then close from this goroutine.
+	time.Sleep(20 * time.Millisecond)
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Listen did not return after Close")
 	}
 }

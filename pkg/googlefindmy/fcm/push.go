@@ -71,16 +71,51 @@ type MCSClient struct {
 	creds   *FCMCredentials
 	handler PushHandler
 
+	// mu guards conn, ctx/cancel, firstMessage and receivedPersistentIDs.
 	mu           sync.Mutex
 	conn         net.Conn
 	ctx          context.Context
 	cancel       context.CancelFunc
 	firstMessage bool
+
+	// receivedPersistentIDs holds message IDs that were already delivered so
+	// the server can be told about them on login and stop redelivering.
+	receivedPersistentIDs []string
 }
 
 // NewMCSClient creates a new MCS client.
 func NewMCSClient(creds *FCMCredentials, handler PushHandler) *MCSClient {
 	return &MCSClient{creds: creds, handler: handler}
+}
+
+// currentConn returns the active connection or an error when the client is not
+// connected.
+func (c *MCSClient) currentConn() (net.Conn, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return nil, errors.New("mcs: not connected")
+	}
+	return c.conn, nil
+}
+
+// currentCtx returns the client context or nil when not connected.
+func (c *MCSClient) currentCtx() context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ctx
+}
+
+func (c *MCSClient) rememberPersistentID(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.receivedPersistentIDs = append(c.receivedPersistentIDs, id)
+}
+
+func (c *MCSClient) persistentIDs() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.receivedPersistentIDs...)
 }
 
 // tlsConn returns a TLS connection wrapper.
@@ -90,6 +125,10 @@ func tlsConn(raw net.Conn) net.Conn {
 
 // Connect dials mtalk.google.com:5228, performs TLS, logs in, and returns.
 func (c *MCSClient) Connect(ctx context.Context) error {
+	if c.creds == nil || c.creds.GCM == nil {
+		return errors.New("mcs: missing FCM GCM credentials")
+	}
+
 	c.mu.Lock()
 	c.ctx, c.cancel = context.WithCancel(ctx)
 	c.firstMessage = true
@@ -102,7 +141,7 @@ func (c *MCSClient) Connect(ctx context.Context) error {
 	}
 	conn := tlsConn(rawConn)
 	if err := conn.(*tls.Conn).HandshakeContext(ctx); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("mcs tls: %w", err)
 	}
 	c.mu.Lock()
@@ -111,7 +150,7 @@ func (c *MCSClient) Connect(ctx context.Context) error {
 
 	// Set a read deadline so the login response doesn't hang forever.
 	if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
-		conn.Close()
+		_ = c.Close()
 		return fmt.Errorf("mcs set read deadline: %w", err)
 	}
 
@@ -132,6 +171,12 @@ func (c *MCSClient) Connect(ctx context.Context) error {
 		Resource:          proto.String(fmt.Sprintf("%d", androidID)),
 		User:              proto.String(fmt.Sprintf("%d", androidID)),
 		UseRmq2:           &useRmq2,
+		// new_vc=1 matches the reference client and is required by newer
+		// MCS servers.
+		Setting: []*fcmpb.Setting{
+			{Name: proto.String("new_vc"), Value: proto.String("1")},
+		},
+		ReceivedPersistentId: c.persistentIDs(),
 		HeartbeatStat: &fcmpb.HeartbeatStat{
 			Ip:         proto.String(""),
 			Timeout:    proto.Bool(true),
@@ -140,18 +185,18 @@ func (c *MCSClient) Connect(ctx context.Context) error {
 	}
 
 	if err := c.sendMsg(req); err != nil {
-		c.conn.Close()
+		_ = c.Close()
 		return fmt.Errorf("mcs send login: %w", err)
 	}
 
 	resp, err := c.readMsg()
 	if err != nil {
-		c.conn.Close()
+		_ = c.Close()
 		return fmt.Errorf("mcs read login response: %w", err)
 	}
 	loginResp, ok := resp.(*fcmpb.LoginResponse)
 	if !ok {
-		c.conn.Close()
+		_ = c.Close()
 		return fmt.Errorf("mcs: expected LoginResponse, got %T", resp)
 	}
 	log.Printf("[MCS] logged in (android-id=%x, server-timestamp=%d, stream-id=%d, settings=%d)",
@@ -160,24 +205,51 @@ func (c *MCSClient) Connect(ctx context.Context) error {
 	return nil
 }
 
-// Listen runs the receive loop. Blocks until connection closes or error.
+// Listen runs the receive loop. It blocks until the context is cancelled, the
+// connection closes, or an error occurs. The client must be connected first.
 func (c *MCSClient) Listen() error {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
+
+	ctx := c.currentCtx()
+	if ctx == nil {
+		return errors.New("mcs: Listen called before Connect")
+	}
+	if _, err := c.currentConn(); err != nil {
+		return err
+	}
+
+	// A blocking read cannot observe cancellation by itself, so close the
+	// connection when the context is done to unblock it.
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = c.Close()
+		case <-stopWatch:
+		}
+	}()
 
 	for {
 		select {
-		case <-c.ctx.Done():
-			return c.ctx.Err()
+		case <-ctx.Done():
+			return ctx.Err()
 		default:
 		}
 
-		if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		conn, err := c.currentConn()
+		if err != nil {
+			return err
+		}
+		if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
 			return fmt.Errorf("mcs set deadline: %w", err)
 		}
 		msg, err := c.readMsg()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				c.sendMsg(&fcmpb.HeartbeatPing{})
+				if err := c.sendMsg(&fcmpb.HeartbeatPing{}); err != nil {
+					return fmt.Errorf("mcs send heartbeat: %w", err)
+				}
 				continue
 			}
 			return fmt.Errorf("mcs read: %w", err)
@@ -186,35 +258,73 @@ func (c *MCSClient) Listen() error {
 		switch m := msg.(type) {
 		case *fcmpb.HeartbeatPing:
 			log.Printf("[MCS] heartbeat ping")
-			c.sendMsg(&fcmpb.HeartbeatAck{})
+			if err := c.sendMsg(&fcmpb.HeartbeatAck{}); err != nil {
+				return fmt.Errorf("mcs send heartbeat ack: %w", err)
+			}
 		case *fcmpb.HeartbeatAck:
 			log.Printf("[MCS] heartbeat ack")
 		case *fcmpb.IqStanza:
 			log.Printf("[MCS] iq stanza")
 		case *fcmpb.DataMessageStanza:
 			log.Printf("[MCS] data message stanza")
-			handleDataMessage(c.creds, m, c.handler)
+			persistentID := handleDataMessage(c.creds, m, c.handler)
+			if persistentID != "" {
+				c.rememberPersistentID(persistentID)
+				if err := sendSelectiveAck(c, persistentID); err != nil {
+					return fmt.Errorf("mcs send selective ack: %w", err)
+				}
+			}
 		case *fcmpb.Close:
-			return fmt.Errorf("mcs closed by server")
+			return errors.New("mcs closed by server")
 		case *fcmpb.StreamErrorStanza:
-			return fmt.Errorf("mcs stream error")
+			return errors.New("mcs stream error")
 		default:
 			log.Printf("[MCS] unhandled message type: %T", msg)
 		}
 	}
 }
 
-// Close closes the MCS connection.
+// Run connects and listens, reconnecting with exponential backoff (capped at
+// 30s) until ctx is cancelled. Listen is the single-shot alternative.
+func (c *MCSClient) Run(ctx context.Context) error {
+	backoff := time.Second
+	for {
+		if err := c.Connect(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			log.Printf("[MCS] connect failed: %v", err)
+		} else if err := c.Listen(); err != nil && ctx.Err() == nil {
+			log.Printf("[MCS] connection lost: %v", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+
+		backoff *= 2
+		if backoff > 30*time.Second {
+			backoff = 30 * time.Second
+		}
+	}
+}
+
+// Close closes the MCS connection. It is safe to call multiple times.
 func (c *MCSClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.cancel != nil {
 		c.cancel()
+		c.cancel = nil
 	}
-	if c.conn != nil {
-		return c.conn.Close()
+	if c.conn == nil {
+		return nil
 	}
-	return nil
+	err := c.conn.Close()
+	c.conn = nil
+	return err
 }
 
 // sendMsg marshals, frames, and writes a protobuf message to the MCS
@@ -232,6 +342,10 @@ func (c *MCSClient) sendMsg(msg proto.Message) error {
 	}
 
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return errors.New("mcs: not connected")
+	}
 	var frame []byte
 	if c.firstMessage {
 		frame = make([]byte, 0, 2+5+len(payload))
@@ -242,15 +356,28 @@ func (c *MCSClient) sendMsg(msg proto.Message) error {
 	}
 	frame = append(frame, encodeVarint32(uint32(len(payload)))...)
 	frame = append(frame, payload...)
-	_, err = c.conn.Write(frame)
-	c.mu.Unlock()
-	return err
+
+	for len(frame) > 0 {
+		n, err := c.conn.Write(frame)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrUnexpectedEOF
+		}
+		frame = frame[n:]
+	}
+	return nil
 }
 
 // readMsg reads one MCS-framed message from the connection.
 // The version byte is only present on the first message received.
 func (c *MCSClient) readMsg() (proto.Message, error) {
-	var tag int
+	conn, err := c.currentConn()
+	if err != nil {
+		return nil, err
+	}
+
 	c.mu.Lock()
 	isFirst := c.firstMessage
 	if isFirst {
@@ -258,21 +385,27 @@ func (c *MCSClient) readMsg() (proto.Message, error) {
 	}
 	c.mu.Unlock()
 
+	var tag int
 	if isFirst {
 		var hdr [2]byte
-		if _, err := io.ReadFull(c.conn, hdr[:]); err != nil {
+		if _, err := io.ReadFull(conn, hdr[:]); err != nil {
 			return nil, fmt.Errorf("mcs read header: %w", err)
+		}
+		// The reference client accepts version >= MCS_VERSION (41) as well as
+		// the legacy version 38.
+		if version := int(hdr[0]); version < mcsVersion && version != 38 {
+			return nil, fmt.Errorf("mcs: unsupported protocol version %d", version)
 		}
 		tag = int(hdr[1])
 	} else {
 		var b [1]byte
-		if _, err := io.ReadFull(c.conn, b[:]); err != nil {
+		if _, err := io.ReadFull(conn, b[:]); err != nil {
 			return nil, fmt.Errorf("mcs read tag: %w", err)
 		}
 		tag = int(b[0])
 	}
 
-	size, err := decodeVarint32(c.conn)
+	size, err := decodeVarint32(conn)
 	if err != nil {
 		return nil, fmt.Errorf("mcs read size: %w", err)
 	}
@@ -281,7 +414,7 @@ func (c *MCSClient) readMsg() (proto.Message, error) {
 	}
 
 	payload := make([]byte, size)
-	if _, err := io.ReadFull(c.conn, payload); err != nil {
+	if _, err := io.ReadFull(conn, payload); err != nil {
 		return nil, fmt.Errorf("mcs read payload: %w", err)
 	}
 
@@ -298,17 +431,25 @@ func (c *MCSClient) readMsg() (proto.Message, error) {
 
 // --- Selective ACK ---
 
-func sendSelectiveAck(c *MCSClient) {
+// sendSelectiveAck tells the server that the message with persistentID was
+// received so it can be dropped from the redelivery queue.
+func sendSelectiveAck(c *MCSClient, persistentID string) error {
 	extID := int32(mcsSelectiveAckID)
 	iqType := fcmpb.IqStanza_SET
+	ack := &fcmpb.SelectiveAck{Id: []string{persistentID}}
+	data, err := proto.Marshal(ack)
+	if err != nil {
+		return fmt.Errorf("mcs marshal selective ack: %w", err)
+	}
 	msg := &fcmpb.IqStanza{
 		Type: &iqType,
 		Id:   proto.String(""),
 		Extension: &fcmpb.Extension{
-			Id: &extID,
+			Id:   &extID,
+			Data: data,
 		},
 	}
-	c.sendMsg(msg)
+	return c.sendMsg(msg)
 }
 
 // --- Varint ---
@@ -349,21 +490,25 @@ func decodeVarint32(r io.Reader) (uint32, error) {
 
 // --- Web Push ECE Decryption (RFC 8291) ---
 
-func handleDataMessage(creds *FCMCredentials, msg *fcmpb.DataMessageStanza, handler PushHandler) {
+// handleDataMessage decrypts a data message and invokes the handler. It
+// returns the message's persistent ID, which must be acknowledged even when
+// decryption or handling fails.
+func handleDataMessage(creds *FCMCredentials, msg *fcmpb.DataMessageStanza, handler PushHandler) string {
 	log.Printf("[MCS] handleDataMessage: app_data=%d, raw_data_len=%d",
 		len(msg.GetAppData()), len(msg.GetRawData()))
 
+	persistentID := msg.GetPersistentId()
 	decrypted, err := decryptWebPushECE(creds, msg)
 	if err != nil {
 		log.Printf("[MCS] decrypt: %v", err)
-		return
+		return persistentID
 	}
 
 	log.Printf("[MCS] decrypted %d bytes", len(decrypted))
-	persistentID := msg.GetPersistentId()
 	if persistentID != "" && handler != nil {
 		handler(decrypted, persistentID)
 	}
+	return persistentID
 }
 
 // decryptWebPushECE decrypts an FCM Web Push (ECE, aesgcm) payload.
