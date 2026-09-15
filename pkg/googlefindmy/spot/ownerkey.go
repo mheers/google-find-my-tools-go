@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 
@@ -18,14 +17,14 @@ import (
 // registration, so the real value must be sent (not a placeholder).
 func androidIDFromSecrets(secrets *auth.Secrets) (string, error) {
 	if len(secrets.FCMCredentials) == 0 {
-		return "", errors.New("fcm credentials not found; register for FCM first")
+		return "", fmt.Errorf("%w: fcm credentials missing; register for FCM first", auth.ErrSecretsNotFound)
 	}
 	var creds fcm.FCMCredentials
 	if err := json.Unmarshal(secrets.FCMCredentials, &creds); err != nil {
 		return "", fmt.Errorf("parse fcm credentials: %w", err)
 	}
 	if creds.GCM == nil || creds.GCM.AndroidID == 0 {
-		return "", errors.New("fcm credentials do not contain an android id; re-run the FCM registration")
+		return "", fmt.Errorf("%w: fcm credentials do not contain an android id", auth.ErrSecretsNotFound)
 	}
 	return strconv.FormatUint(uint64(creds.GCM.AndroidID), 10), nil
 }
@@ -43,7 +42,7 @@ func GetOwnerKey(ctx context.Context, authStore *auth.Store) ([]byte, error) {
 		return nil, fmt.Errorf("load secrets: %w", err)
 	}
 	if secrets == nil {
-		return nil, fmt.Errorf("secrets not found; run 'gauthenticate' first")
+		return nil, fmt.Errorf("%w: run the authentication flow first", auth.ErrSecretsNotFound)
 	}
 
 	// Check cache.
@@ -56,7 +55,7 @@ func GetOwnerKey(ctx context.Context, authStore *auth.Store) ([]byte, error) {
 
 	// Need shared key.
 	if secrets.SharedKey == "" {
-		return nil, fmt.Errorf("shared key not found; re-run 'gauthenticate'")
+		return nil, fmt.Errorf("%w: shared key missing; re-run the authentication flow", auth.ErrSecretsNotFound)
 	}
 	sharedKey, err := hex.DecodeString(secrets.SharedKey)
 	if err != nil {

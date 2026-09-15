@@ -3,9 +3,9 @@ package maps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -216,8 +216,8 @@ func TestGetStateAllAuthUsersUnauthenticated(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when every authuser index is unauthenticated")
 	}
-	if !strings.Contains(err.Error(), "cookies may be expired") {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, ErrCookiesExpired) {
+		t.Fatalf("error = %v, want ErrCookiesExpired", err)
 	}
 	assert.Equal(t, 3, hits)
 }

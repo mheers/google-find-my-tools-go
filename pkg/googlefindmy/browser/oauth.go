@@ -33,6 +33,10 @@ const (
 	progressInterval    = 30 * time.Second
 )
 
+// ErrTimeout indicates that a flow waited for user interaction longer than
+// its deadline. Use errors.Is to test for it.
+var ErrTimeout = errors.New("browser: timeout")
+
 // OAuthResult holds the extracted oauth_token cookie.
 type OAuthResult struct {
 	OAuthToken string
@@ -92,7 +96,7 @@ func RunOAuthFlow(ctx context.Context, email string) (*OAuthResult, error) {
 		}
 
 		if time.Now().After(deadline) {
-			return nil, errors.New("timeout waiting for oauth_token cookie")
+			return nil, fmt.Errorf("%w waiting for oauth_token cookie", ErrTimeout)
 		}
 		if time.Since(lastProgress) >= progressInterval {
 			slog.Info("still waiting for OAuth login", "remaining", time.Until(deadline).Round(time.Second))
@@ -244,7 +248,7 @@ func RequestSharedKey(ctx context.Context) (string, error) {
 		}
 
 		if time.Now().After(deadline) {
-			return "", errors.New("sign-in timeout")
+			return "", fmt.Errorf("%w waiting for sign-in", ErrTimeout)
 		}
 		if time.Since(lastProgress) >= progressInterval {
 			slog.Info("still waiting for sign-in", "remaining", time.Until(deadline).Round(time.Second))
@@ -288,7 +292,7 @@ func RequestSharedKey(ctx context.Context) (string, error) {
 			break
 		}
 		if time.Now().After(keysDeadline) {
-			return "", errors.New("timeout waiting for E2EE vault keys")
+			return "", fmt.Errorf("%w waiting for E2EE vault keys", ErrTimeout)
 		}
 
 		select {

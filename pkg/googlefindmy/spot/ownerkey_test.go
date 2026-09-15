@@ -3,6 +3,7 @@ package spot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -62,5 +63,28 @@ func TestGetOwnerKeyUsesCache(t *testing.T) {
 	}
 	if len(key) != 3 || key[0] != 0x01 || key[1] != 0x02 || key[2] != 0xfe {
 		t.Fatalf("owner key = %x, want 0102fe", key)
+	}
+}
+
+func TestGetOwnerKeyMissingSecretsIsSentinelError(t *testing.T) {
+	store, err := auth.NewStore(filepath.Join(t.TempDir(), "secrets.json"))
+	if err != nil {
+		t.Fatalf("auth.NewStore: %v", err)
+	}
+	if _, err := GetOwnerKey(context.Background(), store); !errors.Is(err, auth.ErrSecretsNotFound) {
+		t.Fatalf("error = %v, want auth.ErrSecretsNotFound", err)
+	}
+}
+
+func TestGetOwnerKeyMissingSharedKeyIsSentinelError(t *testing.T) {
+	store, err := auth.NewStore(filepath.Join(t.TempDir(), "secrets.json"))
+	if err != nil {
+		t.Fatalf("auth.NewStore: %v", err)
+	}
+	if err := store.Save(&auth.Secrets{Username: "u", AASToken: "t"}); err != nil {
+		t.Fatalf("save secrets: %v", err)
+	}
+	if _, err := GetOwnerKey(context.Background(), store); !errors.Is(err, auth.ErrSecretsNotFound) {
+		t.Fatalf("error = %v, want auth.ErrSecretsNotFound", err)
 	}
 }

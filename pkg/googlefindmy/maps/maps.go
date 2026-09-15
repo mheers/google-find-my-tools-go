@@ -6,6 +6,7 @@ package maps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,11 @@ import (
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/chrome"
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
 )
+
+// ErrCookiesExpired indicates that none of the stored Maps session cookies
+// was accepted by the API. Re-run the Maps authentication flow to refresh
+// them. Use errors.Is to test for it.
+var ErrCookiesExpired = errors.New("maps: cookies expired or missing")
 
 // Contact holds a parsed Maps Location Sharing contact or own-location entry.
 type Contact struct {
@@ -218,7 +224,7 @@ func (c *Client) callAPI(ctx context.Context) ([]any, error) {
 			return result, nil
 		}
 	}
-	return nil, fmt.Errorf("all authuser indices failed — cookies may be expired, re-run gmauthenticate")
+	return nil, fmt.Errorf("%w: all authuser indices failed", ErrCookiesExpired)
 }
 
 func (c *Client) tryAuthUser(ctx context.Context, authuser int) ([]any, error) {

@@ -29,29 +29,58 @@ The library requires Go 1.26 or newer.
 ## Usage
 
 ```go
+package main
+
 import (
+    "fmt"
+    "log"
+
     "github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/crypto"
-    "github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/nova"
 )
 
-// ... use the packages as needed
+func main() {
+    // identityKey is the 32-byte EIK recovered from the account's key backup.
+    identityKey := make([]byte, 32)
+    eid, err := crypto.GenerateEID(identityKey, 1_700_000_000)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("EID: %x\n", eid)
+}
 ```
 
-The public API is split into focused packages under
-`internal/googlefindmy`:
+The public API is split into focused packages under `pkg/googlefindmy`:
 
 | Package            | Responsibility                                                        |
 | ------------------ | --------------------------------------------------------------------- |
 | `auth`             | GPSOAuth token derivation and token storage                           |
-| `browser`          | Chrome-driven OAuth login flow                                        |
+| `browser`          | Chrome-driven OAuth and shared-key flows                              |
+| `chrome`           | Shared Chrome launch configuration for the automation flows           |
 | `crypto`           | EID/FMDN, EAX, location encryption, key backup, secp160r1 primitives  |
-| `fcm`              | FCM check-in and push registration                                    |
-| `grpc`             | gRPC client for the Find Hub backend                                  |
-| `maps`             | Geocoding / maps helpers                                              |
+| `fcm`              | FCM check-in, registration and push (MCS) client                      |
+| `grpc`             | Minimal gRPC framing used by the Spot API                             |
+| `httpclient`       | Default HTTP client (30s timeout) shared by the API clients           |
+| `maps`             | Geocoding / Maps Location Sharing helpers                             |
+| `maps/savedplaces` | Google Maps saved-lists client and discovery                          |
 | `nova`             | Nova API client                                                       |
 | `spot`             | Spot API client and owner-key handling                                |
 | `proto/fcm`        | Generated protobuf types for FCM                                      |
 | `proto/findhub`    | Generated protobuf types for the Find Hub backend                     |
+
+## Logging
+
+The library uses `log/slog`. Lifecycle messages are emitted at `Info`,
+protocol chatter and payload metadata at `Debug`, and recoverable problems at
+`Warn`. Credentials, key material and decrypted payloads are never logged. To
+see the protocol details while debugging:
+
+```go
+slog.SetLogLoggerLevel(slog.LevelDebug)
+```
+
+Sentinel errors (`auth.ErrSecretsNotFound`, `maps.ErrCookiesExpired`,
+`browser.ErrTimeout`) can be tested with `errors.Is`.
+
 
 ## Secrets handling
 

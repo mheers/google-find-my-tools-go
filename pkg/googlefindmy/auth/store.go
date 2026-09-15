@@ -4,11 +4,17 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 )
+
+// ErrSecretsNotFound indicates that the credential store is missing data
+// required for the requested operation (e.g. the file does not exist yet or a
+// required token was never stored). Use errors.Is to test for it.
+var ErrSecretsNotFound = errors.New("auth: secrets not found")
 
 // Secrets holds all tokens/credentials needed for the Find My API.
 type Secrets struct {
