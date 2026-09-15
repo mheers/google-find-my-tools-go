@@ -306,3 +306,28 @@ func TestPreferDomain(t *testing.T) {
 		}
 	}
 }
+
+func TestToFloat(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  any
+		want   float64
+		wantOK bool
+	}{
+		{"float64", 1.5, 1.5, true},
+		{"int", 2, 2, true},
+		{"int64", int64(3), 3, true},
+		{"string", " 4.25 ", 4.25, true},
+		{"invalid string", "north", 0, false},
+		{"nil", nil, 0, false},
+		{"bool", true, 0, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := toFloat(tc.input)
+			if ok != tc.wantOK || got != tc.want {
+				t.Fatalf("toFloat(%#v) = (%v, %v), want (%v, %v)", tc.input, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}

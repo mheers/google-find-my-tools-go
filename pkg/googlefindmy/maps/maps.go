@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -462,12 +463,16 @@ func toFloat(v any) (float64, bool) {
 	case int64:
 		return float64(val), true
 	case string:
-		var f float64
-		if _, err := fmt.Sscanf(val, "%f", &f); err == nil {
-			return f, true
+		f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		if err != nil {
+			slog.Debug("maps: cannot parse numeric value", "value", val)
+			return 0, false
 		}
-		return 0, false
+		return f, true
 	default:
+		if v != nil {
+			slog.Debug("maps: unexpected numeric value type", "type", fmt.Sprintf("%T", v))
+		}
 		return 0, false
 	}
 }
