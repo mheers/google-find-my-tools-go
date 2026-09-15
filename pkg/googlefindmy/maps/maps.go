@@ -46,10 +46,12 @@ type Contact struct {
 // AuthenticateMaps opens Chrome, navigates to Google Maps, waits for the user
 // to log in, then extracts all google.com cookies and saves them to the store
 // under "maps_cookies". Returns the number of cookies saved.
-func AuthenticateMaps(ctx context.Context, store *auth.Store) (int, error) {
+// cfg controls the Chrome launch; pass a persistent UserDataDir so later runs
+// reuse an existing sign-in instead of signing in again.
+func AuthenticateMaps(ctx context.Context, store *auth.Store, cfg chrome.Config) (int, error) {
 	slog.Info("starting Maps authentication — opening Chrome...")
 
-	allocCtx, cancel := chromedp.NewExecAllocator(ctx, chrome.Config{Headless: false}.AllocatorOptions()...)
+	allocCtx, cancel := chromedp.NewExecAllocator(ctx, cfg.AllocatorOptions()...)
 	defer cancel()
 
 	chromeCtx, cancel := chromedp.NewContext(allocCtx)

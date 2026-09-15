@@ -54,13 +54,15 @@ func deadlineFromContext(ctx context.Context, fallback time.Duration) time.Time 
 	return time.Now().Add(fallback)
 }
 
-// RunOAuthFlow opens Chrome, waits for the user to complete Google OAuth,
-// then extracts the oauth_token cookie from the browser. The wait honors the
-// context deadline; the default is five minutes.
-func RunOAuthFlow(ctx context.Context, email string) (*OAuthResult, error) {
+// RunOAuthFlow opens Chrome, waits for the user to complete the Google
+// embedded-setup sign-in, then extracts the oauth_token cookie from the
+// browser. The wait honors the context deadline; the default is five minutes.
+// cfg controls the Chrome launch; pass a persistent UserDataDir so later runs
+// reuse an existing sign-in instead of signing in again.
+func RunOAuthFlow(ctx context.Context, cfg chrome.Config, email string) (*OAuthResult, error) {
 	oauthURL := buildOAuthURL(email)
 
-	allocCtx, cancel := chromedp.NewExecAllocator(ctx, chrome.Config{Headless: false}.AllocatorOptions()...)
+	allocCtx, cancel := chromedp.NewExecAllocator(ctx, cfg.AllocatorOptions()...)
 	defer cancel()
 
 	chromeCtx, cancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(slog.Debug))
@@ -114,17 +116,19 @@ func RunOAuthFlow(ctx context.Context, email string) (*OAuthResult, error) {
 	}
 }
 
-// buildOAuthURL constructs the Google OAuth URL.
+// buildOAuthURL returns the Google embedded-setup URL that drives the browser
+// through the Android sign-in flow and sets the oauth_token cookie. It needs
+// no OAuth client ID: the previous /o/oauth2/auth URL used a hardcoded
+// third-party client that Google retired (HTTP 401 invalid_client). This
+// mirrors the original Python flow (Auth/auth_flow.py).
 func buildOAuthURL(email string) string {
-	params := url.Values{}
-	params.Set("client_id", "848232127117.apps.googleusercontent.com")
-	params.Set("response_type", "token")
-	params.Set("scope", "https://www.google.com/accounts/OAuthLogin")
-	params.Set("redirect_uri", "https://accounts.google.com/o/oauth2/approved")
+	u := "https://accounts.google.com/EmbeddedSetup"
 	if email != "" {
+		params := url.Values{}
 		params.Set("Email", email)
+		u += "?" + params.Encode()
 	}
-	return "https://accounts.google.com/o/oauth2/auth?" + params.Encode()
+	return u
 }
 
 // buildSecurityDomainURL constructs the security domain URL for shared key
@@ -209,13 +213,15 @@ const wrapVaultKeysJS = `
 // the security domain URL, and intercepts the window.mm.setVaultSharedKeys
 // call to extract the E2EE shared key. Returns the hex-encoded shared key.
 // The sign-in wait honors the context deadline; the default is five minutes.
-func RequestSharedKey(ctx context.Context) (string, error) {
+// cfg controls the Chrome launch; pass a persistent UserDataDir so later runs
+// reuse an existing sign-in instead of signing in again.
+func RequestSharedKey(ctx context.Context, cfg chrome.Config) (string, error) {
 	secURL, err := buildSecurityDomainURL()
 	if err != nil {
 		return "", fmt.Errorf("build security domain url: %w", err)
 	}
 
-	allocCtx, cancel := chromedp.NewExecAllocator(ctx, chrome.Config{Headless: false}.AllocatorOptions()...)
+	allocCtx, cancel := chromedp.NewExecAllocator(ctx, cfg.AllocatorOptions()...)
 	defer cancel()
 
 	chromeCtx, cancel := chromedp.NewContext(allocCtx)

@@ -12,14 +12,15 @@ import (
 func TestBuildOAuthURL(t *testing.T) {
 	got := buildOAuthURL("user@example.com")
 	for _, want := range []string{
-		"client_id=848232127117.apps.googleusercontent.com",
-		"response_type=token",
-		"scope=https%3A%2F%2Fwww.google.com%2Faccounts%2FOAuthLogin",
+		"https://accounts.google.com/EmbeddedSetup",
 		"Email=user%40example.com",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("buildOAuthURL missing %q in %q", want, got)
 		}
+	}
+	if strings.Contains(got, "client_id") {
+		t.Errorf("buildOAuthURL must not depend on an OAuth client ID: %q", got)
 	}
 
 	if got := buildOAuthURL(""); strings.Contains(got, "Email=") {

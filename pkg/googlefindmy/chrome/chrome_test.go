@@ -27,3 +27,21 @@ func TestAllocatorOptions(t *testing.T) {
 		t.Fatal("expected allocator options")
 	}
 }
+
+func TestAllocatorFlags(t *testing.T) {
+	flags := Config{UserDataDir: "/tmp/findhub-profile"}.initFlags()
+
+	if got, ok := flags["enable-automation"]; !ok || got != false {
+		t.Errorf("enable-automation = %v, want false", got)
+	}
+	if got := flags["disable-blink-features"]; got != "AutomationControlled" {
+		t.Errorf("disable-blink-features = %v, want AutomationControlled", got)
+	}
+	if got := flags["user-data-dir"]; got != "/tmp/findhub-profile" {
+		t.Errorf("user-data-dir = %v, want /tmp/findhub-profile", got)
+	}
+
+	if _, ok := (Config{}).initFlags()["user-data-dir"]; ok {
+		t.Error("user-data-dir must be omitted when UserDataDir is empty")
+	}
+}

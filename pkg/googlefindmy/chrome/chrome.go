@@ -31,24 +31,52 @@ type Config struct {
 	DisableGPU bool
 	// WindowSize sets the initial window size, e.g. "1280,720".
 	WindowSize string
+	// UserDataDir makes Chrome reuse a persistent profile instead of the
+	// throwaway temporary directory chromedp creates for every run. The
+	// interactive sign-in flows need it: against a fresh profile, every run
+	// is a stranger to Google and the sign-in is refused with "This browser
+	// or app may not be secure". Sign in to the directory once with a normal
+	// Chrome (`google-chrome --user-data-dir=<dir>`), close it, and later
+	// runs reuse the stored session. Empty keeps chromedp's temporary
+	// profile.
+	UserDataDir string
+}
+
+// initFlags returns the Chrome command-line flags for the config. It is a
+// separate step from AllocatorOptions so the flags stay testable.
+func (c Config) initFlags() map[string]any {
+	flags := map[string]any{
+		"headless": c.Headless,
+		// chromedp's defaults mark the browser as automation-controlled
+		// (--enable-automation). Google's sign-in pages reject such browsers,
+		// so turn the flag off and hide the corresponding Blink feature.
+		"enable-automation":      false,
+		"disable-blink-features": "AutomationControlled",
+	}
+	if c.noSandbox() {
+		flags["no-sandbox"] = true
+	}
+	if c.DisableDevShmUsage {
+		flags["disable-dev-shm-usage"] = true
+	}
+	if c.DisableGPU {
+		flags["disable-gpu"] = true
+	}
+	if c.WindowSize != "" {
+		flags["window-size"] = c.WindowSize
+	}
+	if c.UserDataDir != "" {
+		flags["user-data-dir"] = c.UserDataDir
+	}
+	return flags
 }
 
 // AllocatorOptions returns the chromedp exec-allocator options for the config.
 func (c Config) AllocatorOptions() []chromedp.ExecAllocatorOption {
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", c.Headless),
-	)
-	if c.noSandbox() {
-		opts = append(opts, chromedp.Flag("no-sandbox", true))
-	}
-	if c.DisableDevShmUsage {
-		opts = append(opts, chromedp.Flag("disable-dev-shm-usage", true))
-	}
-	if c.DisableGPU {
-		opts = append(opts, chromedp.Flag("disable-gpu", true))
-	}
-	if c.WindowSize != "" {
-		opts = append(opts, chromedp.Flag("window-size", c.WindowSize))
+	opts := make([]chromedp.ExecAllocatorOption, 0, len(chromedp.DefaultExecAllocatorOptions)+8)
+	opts = append(opts, chromedp.DefaultExecAllocatorOptions[:]...)
+	for name, value := range c.initFlags() {
+		opts = append(opts, chromedp.Flag(name, value))
 	}
 	return opts
 }

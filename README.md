@@ -81,6 +81,34 @@ slog.SetLogLoggerLevel(slog.LevelDebug)
 Sentinel errors (`auth.ErrSecretsNotFound`, `maps.ErrCookiesExpired`,
 `browser.ErrTimeout`) can be tested with `errors.Is`.
 
+## Interactive sign-in flows
+
+`browser.RunOAuthFlow`, `browser.RequestSharedKey` and `maps.AuthenticateMaps`
+open a visible Chrome window. They drive Chrome through chromedp, which by
+default launches a throwaway profile and flags the browser as automated; Google
+refuses sign-in from such a browser with *"This browser or app may not be
+secure"*. The launch configuration therefore disables the automation flag and
+supports a persistent profile:
+
+```go
+cfg := chrome.Config{
+    UserDataDir: "/path/to/chrome-profile", // reuse a signed-in profile
+}
+res, err := browser.RunOAuthFlow(ctx, cfg, "")
+```
+
+Sign the profile in **once**, outside the automation, then close it:
+
+```sh
+google-chrome --user-data-dir=/path/to/chrome-profile
+```
+
+Every later run reuses the session and never visits the sign-in page. Without a
+`UserDataDir`, each run gets a fresh temporary profile and must sign in again —
+which Google increasingly blocks. The `RunOAuthFlow` URL is
+`accounts.google.com/EmbeddedSetup`, the same entry point the Python
+implementation uses; it needs no OAuth client ID (the hardcoded client of the
+earlier Go port has been retired by Google).
 
 ## Secrets handling
 
