@@ -133,15 +133,10 @@ func AuthenticateMaps(ctx context.Context, store *auth.Store) (int, error) {
 		return 0, fmt.Errorf("marshal maps cookies: %w", err)
 	}
 
-	secrets, err := store.Load()
-	if err != nil {
-		return 0, fmt.Errorf("load secrets: %w", err)
-	}
-	if secrets == nil {
-		secrets = &auth.Secrets{}
-	}
-	secrets.MapsCookies = raw
-	if err := store.Save(secrets); err != nil {
+	if err := store.Update(func(secrets *auth.Secrets) error {
+		secrets.MapsCookies = raw
+		return nil
+	}); err != nil {
 		return 0, fmt.Errorf("save maps cookies: %w", err)
 	}
 

@@ -97,8 +97,10 @@ func GetOwnerKey(ctx context.Context, authStore *auth.Store) ([]byte, error) {
 	}
 
 	// Cache.
-	secrets.OwnerKey = hex.EncodeToString(ownerKey)
-	if err := authStore.Save(secrets); err != nil {
+	if err := authStore.Update(func(stored *auth.Secrets) error {
+		stored.OwnerKey = hex.EncodeToString(ownerKey)
+		return nil
+	}); err != nil {
 		return nil, fmt.Errorf("cache owner key: %w", err)
 	}
 

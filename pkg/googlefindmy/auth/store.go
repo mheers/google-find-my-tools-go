@@ -41,7 +41,10 @@ func NewStore(path string) (*Store, error) {
 func (s *Store) Load() (*Secrets, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.loadLocked()
+}
 
+func (s *Store) loadLocked() (*Secrets, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -61,7 +64,30 @@ func (s *Store) Load() (*Secrets, error) {
 func (s *Store) Save(secrets *Secrets) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.saveLocked(secrets)
+}
 
+// Update atomically applies fn to the stored secrets and writes the result,
+// creating an empty Secrets when the file does not exist yet. Callers must not
+// call Store methods from fn (the lock is held for the duration).
+func (s *Store) Update(fn func(*Secrets) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	secrets, err := s.loadLocked()
+	if err != nil {
+		return err
+	}
+	if secrets == nil {
+		secrets = &Secrets{}
+	}
+	if err := fn(secrets); err != nil {
+		return err
+	}
+	return s.saveLocked(secrets)
+}
+
+func (s *Store) saveLocked(secrets *Secrets) error {
 	data, err := json.MarshalIndent(secrets, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal secrets: %w", err)
