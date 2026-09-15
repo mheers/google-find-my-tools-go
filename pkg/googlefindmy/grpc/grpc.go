@@ -9,12 +9,19 @@ package grpc
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 )
 
 // Wrap prepends the gRPC framing header to payload.
 func Wrap(payload []byte) []byte {
+	if len(payload) > math.MaxUint32 {
+		// Unreachable on 32-bit platforms and practically unreachable
+		// elsewhere; guard so the length cast below cannot truncate.
+		panic("grpc: payload exceeds the gRPC frame limit")
+	}
 	out := make([]byte, 5+len(payload))
 	out[0] = 0 // not compressed
 	binary.BigEndian.PutUint32(out[1:5], uint32(len(payload)))
@@ -31,6 +38,9 @@ func Unwrap(framed []byte) ([]byte, error) {
 	if len(framed) < 5 {
 		return nil, fmt.Errorf("grpc: frame too short (%d bytes)", len(framed))
 	}
+	if framed[0] != 0 {
+		return nil, errors.New("grpc: compressed frames are not supported")
+	}
 	length := binary.BigEndian.Uint32(framed[1:5])
 	if length > maxFrameSize {
 		return nil, fmt.Errorf("grpc: frame length %d exceeds limit %d", length, maxFrameSize)
@@ -46,6 +56,9 @@ func ReadFrame(r io.Reader) ([]byte, error) {
 	header := make([]byte, 5)
 	if _, err := io.ReadFull(r, header); err != nil {
 		return nil, fmt.Errorf("grpc: read header: %w", err)
+	}
+	if header[0] != 0 {
+		return nil, errors.New("grpc: compressed frames are not supported")
 	}
 	length := binary.BigEndian.Uint32(header[1:5])
 	if length > maxFrameSize {

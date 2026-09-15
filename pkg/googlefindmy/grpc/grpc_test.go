@@ -65,6 +65,22 @@ func TestReadFrameTruncated(t *testing.T) {
 	}
 }
 
+func TestUnwrapRejectsCompressedFrame(t *testing.T) {
+	framed := Wrap([]byte("payload"))
+	framed[0] = 1 // gzip flag
+	if _, err := Unwrap(framed); err == nil {
+		t.Fatal("expected an error for a compressed frame")
+	}
+}
+
+func TestReadFrameRejectsCompressedFrame(t *testing.T) {
+	framed := Wrap([]byte("payload"))
+	framed[0] = 1
+	if _, err := ReadFrame(bytes.NewReader(framed)); err == nil {
+		t.Fatal("expected an error for a compressed frame")
+	}
+}
+
 func FuzzUnwrap(f *testing.F) {
 	f.Add(Wrap([]byte("hello")))
 	f.Add([]byte{0, 0, 0, 0, 0})
