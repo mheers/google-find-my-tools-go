@@ -153,35 +153,24 @@ func buildSecurityDomainURL() (string, error) {
 }
 
 // vaultKeysJS defines the helpers shared by the new-document hook and the
-// post-load fallback. wrapVault observes window.mm's setVaultSharedKeys and
-// closeView both when they already exist and when the page assigns them later
-// — the security-domain page defines them only after its screen-lock challenge.
+// post-load fallback. wrapVault installs always-callable
+// setVaultSharedKeys/closeView methods on window.mm: the Google page calls
+// them to hand the vault keys to the native app, so they must exist as
+// functions. The wrapper captures the arguments and also calls a
+// page-provided implementation when the page defines one.
 const vaultKeysJS = `
 	const wrapMethod = (obj, name, marker, capture) => {
-		if (typeof obj[name] === 'function') {
-			if (obj[marker]) return;
-			const orig = obj[name];
-			obj[name] = function () {
-				try { capture.apply(null, arguments); } catch (e) {}
-				return orig.apply(this, arguments);
-			};
-			obj[marker] = true;
-			return;
-		}
 		if (obj[marker]) return;
-		let value;
+		let target = (typeof obj[name] === 'function') ? obj[name] : null;
+		const call = function () {
+			try { capture.apply(null, arguments); } catch (e) {}
+			if (target) return target.apply(this, arguments);
+		};
 		Object.defineProperty(obj, name, {
 			configurable: true,
 			enumerable: true,
-			get: () => value,
-			set: (fn) => {
-				value = typeof fn === 'function'
-					? function () {
-						try { capture.apply(null, arguments); } catch (e) {}
-						return fn.apply(this, arguments);
-					}
-					: fn;
-			},
+			get: () => call,
+			set: (fn) => { target = (typeof fn === 'function') ? fn : null; },
 		});
 		obj[marker] = true;
 	};
