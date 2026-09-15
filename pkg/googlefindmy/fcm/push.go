@@ -339,11 +339,8 @@ func decodeVarint32(r io.Reader) (uint32, error) {
 // --- Web Push ECE Decryption (RFC 8291) ---
 
 func handleDataMessage(creds *FCMCredentials, msg *fcmpb.DataMessageStanza, handler PushHandler) {
-	for _, a := range msg.GetAppData() {
-		log.Printf("[MCS] app_data: key=%q value=%q", a.GetKey(), a.GetValue())
-	}
-	log.Printf("[MCS] handleDataMessage: app_data=%d, persistent_id=%s, raw_data_len=%d",
-		len(msg.GetAppData()), msg.GetPersistentId(), len(msg.GetRawData()))
+	log.Printf("[MCS] handleDataMessage: app_data=%d, raw_data_len=%d",
+		len(msg.GetAppData()), len(msg.GetRawData()))
 
 	decrypted, err := decryptWebPushECE(creds, msg)
 	if err != nil {
@@ -358,6 +355,11 @@ func handleDataMessage(creds *FCMCredentials, msg *fcmpb.DataMessageStanza, hand
 	}
 }
 
+// decryptWebPushECE decrypts an FCM Web Push (ECE, aesgcm) payload.
+//
+// SECURITY: key material derived here (shared secret, auth secret, HKDF
+// intermediates, AES key/nonce) must never be logged. Log only lengths and
+// error messages at most.
 func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]byte, error) {
 	var dhB64, saltB64, subtype string
 	for _, a := range msg.GetAppData() {
@@ -429,18 +431,12 @@ func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]b
 	context = binary.BigEndian.AppendUint16(context, uint16(len(dhRaw)))
 	context = append(context, dhRaw...)
 
-	log.Printf("[MCS] shared_secret: %x", sharedSecret)
-	log.Printf("[MCS] auth_secret: %x", authSecret)
-	log.Printf("[MCS] context: %x", context)
-
 	prk1 := hkdf.Extract(sha256.New, sharedSecret, authSecret)
-	log.Printf("[MCS] prk1: %x", prk1)
 	derived := make([]byte, 32)
 	authInfo := []byte("Content-Encoding: auth\x00")
 	if _, err := io.ReadFull(hkdf.Expand(sha256.New, prk1, authInfo), derived); err != nil {
 		return nil, fmt.Errorf("hkdf expand derived: %w", err)
 	}
-	log.Printf("[MCS] derived: %x", derived)
 
 	prk2 := hkdf.Extract(sha256.New, derived, salt)
 	keyInfo := append([]byte("Content-Encoding: aesgcm\x00"), context...)
@@ -454,7 +450,6 @@ func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]b
 	if _, err := io.ReadFull(hkdf.Expand(sha256.New, prk2, nonceInfo), nonce); err != nil {
 		return nil, fmt.Errorf("hkdf expand nonce: %w", err)
 	}
-	log.Printf("[MCS] key: %x nonce: %x", key, nonce)
 
 	rawData := msg.GetRawData()
 	if len(rawData) == 0 {
