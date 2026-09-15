@@ -131,3 +131,45 @@ func TestUpdatePropagatesErrorWithoutWriting(t *testing.T) {
 		t.Fatalf("secrets should not have been written: %#v", got)
 	}
 }
+
+func TestClearIsIdempotent(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "secrets.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if err := store.Clear(); err != nil {
+		t.Fatalf("Clear on a missing file: %v", err)
+	}
+	if err := store.Update(func(s *Secrets) error { s.Username = "u"; return nil }); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if err := store.Clear(); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	if err := store.Clear(); err != nil {
+		t.Fatalf("second Clear: %v", err)
+	}
+}
+
+func TestExistsReflectsFileState(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "secrets.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if store.Exists() {
+		t.Fatal("Exists = true for a missing file")
+	}
+	if err := store.Update(func(s *Secrets) error { s.Username = "u"; return nil }); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !store.Exists() {
+		t.Fatal("Exists = false after writing secrets")
+	}
+	if err := store.Clear(); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	if store.Exists() {
+		t.Fatal("Exists = true after Clear")
+	}
+}
