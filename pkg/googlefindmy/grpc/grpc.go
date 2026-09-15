@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package grpc provides minimal gRPC message framing used by the Spot API.
 //
 // The Spot service is called over HTTP/2 with the application/grpc content

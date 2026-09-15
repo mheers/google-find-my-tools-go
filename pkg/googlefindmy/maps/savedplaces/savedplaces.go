@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package savedplaces implements the Google Maps saved-places HTTP API client.
 // Replaces the now-deleted findhub-tracker/internal/poi package.
 package savedplaces

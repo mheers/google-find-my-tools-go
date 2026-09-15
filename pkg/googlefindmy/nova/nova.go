@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package nova implements the Google Find My "Nova" HTTP API client.
 // It replaces Python NovaApi/nova_request.py, ListDevices and
 // ExecuteAction/LocateTracker. Requests are raw protobuf POSTs to

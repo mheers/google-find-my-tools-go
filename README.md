@@ -121,6 +121,10 @@ Copyright © 2024 Leon Böttger — original Python implementation
 
 Copyright © 2026 Marcel Heers &lt;marcel@heers.it&gt; — Go port.
 
+Handwritten source files carry an SPDX license identifier; generated files
+under `pkg/googlefindmy/proto` keep the header emitted by the protobuf
+generator.
+
 This program is free software: you can redistribute it and/or modify it under the
 terms of the **GNU General Public License, version 3** (GPL-3.0) as published by the
 Free Software Foundation. The original Python library is also distributed under

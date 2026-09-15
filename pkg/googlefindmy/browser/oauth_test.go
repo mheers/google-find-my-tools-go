@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 package browser
 
 import (

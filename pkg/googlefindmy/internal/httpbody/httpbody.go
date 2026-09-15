@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package httpbody contains helpers for including HTTP response bodies in
 // error messages without leaking credentials or flooding logs.
 package httpbody

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package spot implements the Google Find My "Spot" gRPC-over-HTTP/2 API
 // client. It replaces Python SpotApi/spot_request.py and the gRPC framing in
 // SpotApi/grpc_parser.py. The endpoint is

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package auth manages the secrets.json credential store for Google Find My API.
 // Thread-safe, atomic writes. Replaces Python Auth/token_cache.py.
 package auth

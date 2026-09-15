@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package maps implements the Google Maps Location Sharing API client.
 // Replaces Python driver.py authenticate_maps, list_maps_contacts,
 // fetch_maps_locations, and _call_maps_api.

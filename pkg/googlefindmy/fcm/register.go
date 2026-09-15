@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package fcm manages Firebase Cloud Messaging registration and push (MCS)
 // connections for receiving Find My device location pushes.
 package fcm

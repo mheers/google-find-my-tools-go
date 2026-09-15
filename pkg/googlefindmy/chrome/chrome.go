@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package chrome holds the shared Chrome/Chromium launch configuration used by
 // the browser automation flows (OAuth, Maps and Saved Lists).
 package chrome

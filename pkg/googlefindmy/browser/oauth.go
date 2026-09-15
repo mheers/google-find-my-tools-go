@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package browser handles Chrome-based OAuth flows for Google Find My API.
 // Replaces Python Auth/auth_flow.py (Selenium-based).
 package browser

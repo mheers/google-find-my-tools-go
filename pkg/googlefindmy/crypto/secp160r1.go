@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package crypto implements the cryptographic primitives needed to talk to the
 // Google Find My Device (FMDN) APIs in pure Go — replacing the Python
 // GoogleFindMyTools dependency.

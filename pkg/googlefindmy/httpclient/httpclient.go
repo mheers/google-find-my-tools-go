@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package httpclient provides the default HTTP client configuration shared by
 // the Find My API clients.
 package httpclient

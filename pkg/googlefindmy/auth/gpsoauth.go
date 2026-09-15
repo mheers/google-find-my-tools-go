@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright © 2026 Marcel Heers <marcel@heers.it>
+
 // Package auth provides Google OAuth token exchange for Find My API.
 // Replaces Python Auth/token_retrieval.py and the vendored gpsoauth library.
 package auth
