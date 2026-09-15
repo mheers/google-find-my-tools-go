@@ -7,19 +7,20 @@ import (
 
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
+
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/chrome"
 )
 
 // DiscoverListSpecs uses the authenticated Maps Saved Lists page to discover
 // list IDs. It is separate from the HTTP exporter: discovery is occasional,
 // while fetching list contents remains HTTP-only.
 func DiscoverListSpecs(ctx context.Context, cookies map[string]string) ([]ListSpec, error) {
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", true),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("window-size", "1280,720"),
-	)
+	opts := chrome.Config{
+		Headless:           true,
+		DisableDevShmUsage: true,
+		DisableGPU:         true,
+		WindowSize:         "1280,720",
+	}.AllocatorOptions()
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, opts...)
 	defer cancelAlloc()
 	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)

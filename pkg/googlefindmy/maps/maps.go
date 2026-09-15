@@ -16,6 +16,7 @@ import (
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/auth"
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/chrome"
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
 )
 
@@ -36,11 +37,7 @@ type Contact struct {
 func AuthenticateMaps(ctx context.Context, store *auth.Store) (int, error) {
 	slog.Info("starting Maps authentication — opening Chrome...")
 
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", false),
-		chromedp.Flag("no-sandbox", true),
-	)
-	allocCtx, cancel := chromedp.NewExecAllocator(ctx, opts...)
+	allocCtx, cancel := chromedp.NewExecAllocator(ctx, chrome.Config{Headless: false}.AllocatorOptions()...)
 	defer cancel()
 
 	chromeCtx, cancel := chromedp.NewContext(allocCtx)
@@ -51,13 +48,24 @@ func AuthenticateMaps(ctx context.Context, store *auth.Store) (int, error) {
 	}
 
 	slog.Info("please log into Google Maps in the Chrome window...")
-	slog.Info("waiting for login (polling cookies every 2s, timeout 4min)...")
+	slog.Info("waiting for login (polling cookies)...")
 
 	var allCookies []*network.Cookie
 	deadline := time.Now().Add(4 * time.Minute)
+	if d, ok := ctx.Deadline(); ok {
+		deadline = d
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	lastProgress := time.Now()
+
 	found := false
-	for time.Now().Before(deadline) {
-		time.Sleep(2 * time.Second)
+	for !found {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-ticker.C:
+		}
 
 		if err := chromedp.Run(chromeCtx,
 			chromedp.ActionFunc(func(ctx context.Context) error {
@@ -79,17 +87,21 @@ func AuthenticateMaps(ctx context.Context, store *auth.Store) (int, error) {
 				break
 			}
 		}
-		if found {
-			break
+		if !found && time.Now().After(deadline) {
+			return 0, fmt.Errorf("login timeout — SID cookie not found after 4 minutes")
+		}
+		if !found && time.Since(lastProgress) >= 30*time.Second {
+			slog.Info("still waiting for Maps login", "remaining", time.Until(deadline).Round(time.Second))
+			lastProgress = time.Now()
 		}
 	}
 
-	if !found {
-		return 0, fmt.Errorf("login timeout — SID cookie not found after 4 minutes")
+	// Extra wait for all cookies to settle (bounded and cancellable).
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-time.After(3 * time.Second):
 	}
-
-	// Extra wait for all cookies to settle.
-	time.Sleep(3 * time.Second)
 
 	// Re-fetch cookies after the wait.
 	if err := chromedp.Run(chromeCtx,

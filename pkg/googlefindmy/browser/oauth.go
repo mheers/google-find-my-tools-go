@@ -7,18 +7,30 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/chrome"
 	findhub "github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/proto/findhub"
+)
+
+const (
+	defaultLoginTimeout = 5 * time.Minute
+	defaultKeysTimeout  = 30 * time.Second
+	pollInterval        = 500 * time.Millisecond
+	progressInterval    = 30 * time.Second
 )
 
 // OAuthResult holds the extracted oauth_token cookie.
@@ -26,32 +38,38 @@ type OAuthResult struct {
 	OAuthToken string
 }
 
+// deadlineFromContext returns the context deadline when set, otherwise now
+// plus fallback.
+func deadlineFromContext(ctx context.Context, fallback time.Duration) time.Time {
+	if d, ok := ctx.Deadline(); ok {
+		return d
+	}
+	return time.Now().Add(fallback)
+}
+
 // RunOAuthFlow opens Chrome, waits for the user to complete Google OAuth,
-// then extracts the oauth_token cookie from the browser.
+// then extracts the oauth_token cookie from the browser. The wait honors the
+// context deadline; the default is five minutes.
 func RunOAuthFlow(ctx context.Context, email string) (*OAuthResult, error) {
 	oauthURL := buildOAuthURL(email)
 
-	// Create chrome context with options
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", false),
-		chromedp.Flag("no-sandbox", true),
-	)
-	allocCtx, cancel := chromedp.NewExecAllocator(ctx, opts...)
+	allocCtx, cancel := chromedp.NewExecAllocator(ctx, chrome.Config{Headless: false}.AllocatorOptions()...)
 	defer cancel()
 
 	chromeCtx, cancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(slog.Debug))
 	defer cancel()
 
-	// Navigate to OAuth URL
 	if err := chromedp.Run(chromeCtx, chromedp.Navigate(oauthURL)); err != nil {
 		return nil, fmt.Errorf("navigate: %w", err)
 	}
 
 	slog.Info("waiting for user to complete OAuth in Chrome...")
+	deadline := deadlineFromContext(ctx, defaultLoginTimeout)
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	lastProgress := time.Now()
 
-	// Wait for oauth_token cookie to appear
-	deadline := time.Now().Add(5 * time.Minute)
-	for time.Now().Before(deadline) {
+	for {
 		var cookies []*network.Cookie
 		if err := chromedp.Run(chromeCtx,
 			chromedp.ActionFunc(func(ctx context.Context) error {
@@ -73,10 +91,20 @@ func RunOAuthFlow(ctx context.Context, email string) (*OAuthResult, error) {
 			}
 		}
 
-		time.Sleep(2 * time.Second)
-	}
+		if time.Now().After(deadline) {
+			return nil, errors.New("timeout waiting for oauth_token cookie")
+		}
+		if time.Since(lastProgress) >= progressInterval {
+			slog.Info("still waiting for OAuth login", "remaining", time.Until(deadline).Round(time.Second))
+			lastProgress = time.Now()
+		}
 
-	return nil, fmt.Errorf("timeout waiting for oauth_token cookie")
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // buildOAuthURL constructs the Google OAuth URL.
@@ -111,52 +139,123 @@ func buildSecurityDomainURL() (string, error) {
 	return "https://accounts.google.com/encryption/unlock/android?kdi=" + kdi, nil
 }
 
+// vaultKeysHookJS installs the capture hook before any page script runs. The
+// Google page assigns window.mm; the property setter wraps that assignment so
+// setVaultSharedKeys/closeView are observed without replacing the page's own
+// object (the page's methods are still called).
+const vaultKeysHookJS = `
+(() => {
+	const wrap = (v) => {
+		if (!v || typeof v !== 'object') return v;
+		const wrapFn = (name, marker, capture) => {
+			if (typeof v[name] !== 'function' || v[marker]) return;
+			const orig = v[name];
+			v[name] = function () {
+				try { capture.apply(null, arguments); } catch (e) {}
+				return orig.apply(this, arguments);
+			};
+			v[marker] = true;
+		};
+		wrapFn('setVaultSharedKeys', '__fmd_keys_wrapped', function (str, keys) {
+			window.__e2ee_vault_keys = keys;
+		});
+		wrapFn('closeView', '__fmd_close_wrapped', function () {
+			window.__e2ee_closed = true;
+		});
+		return v;
+	};
+	let mm = {};
+	Object.defineProperty(window, 'mm', {
+		configurable: true,
+		get: () => mm,
+		set: (v) => { mm = wrap(v); },
+	});
+})();
+`
+
+// wrapVaultKeysJS wraps an already-assigned window.mm in place. It is a
+// fallback for pages that mutate the object instead of assigning it.
+const wrapVaultKeysJS = `
+(() => {
+	const v = window.mm;
+	if (!v || typeof v !== 'object') return false;
+	const wrapFn = (name, marker, capture) => {
+		if (typeof v[name] !== 'function' || v[marker]) return;
+		const orig = v[name];
+		v[name] = function () {
+			try { capture.apply(null, arguments); } catch (e) {}
+			return orig.apply(this, arguments);
+		};
+		v[marker] = true;
+	};
+	wrapFn('setVaultSharedKeys', '__fmd_keys_wrapped', function (str, keys) {
+		window.__e2ee_vault_keys = keys;
+	});
+	wrapFn('closeView', '__fmd_close_wrapped', function () {
+		window.__e2ee_closed = true;
+	});
+	return true;
+})();
+`
+
 // RequestSharedKey opens Chrome, waits for the user to sign in, navigates to
 // the security domain URL, and intercepts the window.mm.setVaultSharedKeys
 // call to extract the E2EE shared key. Returns the hex-encoded shared key.
+// The sign-in wait honors the context deadline; the default is five minutes.
 func RequestSharedKey(ctx context.Context) (string, error) {
 	secURL, err := buildSecurityDomainURL()
 	if err != nil {
 		return "", fmt.Errorf("build security domain url: %w", err)
 	}
 
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", false),
-		chromedp.Flag("no-sandbox", true),
-	)
-	allocCtx, cancel := chromedp.NewExecAllocator(ctx, opts...)
+	allocCtx, cancel := chromedp.NewExecAllocator(ctx, chrome.Config{Headless: false}.AllocatorOptions()...)
 	defer cancel()
 
 	chromeCtx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
 
-	// Navigate to accounts.google.com first.
+	// Install the capture hook before any page script runs, so a page that
+	// assigns window.mm cannot race the injection.
+	if err := chromedp.Run(chromeCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		_, err := page.AddScriptToEvaluateOnNewDocument(vaultKeysHookJS).Do(ctx)
+		return err
+	})); err != nil {
+		return "", fmt.Errorf("install vault keys hook: %w", err)
+	}
+
 	slog.Info("navigating to accounts.google.com — please sign in...")
 	if err := chromedp.Run(chromeCtx, chromedp.Navigate("https://accounts.google.com/")); err != nil {
 		return "", fmt.Errorf("navigate to accounts: %w", err)
 	}
 
 	// Wait for the user to sign in (redirect to myaccount.google.com).
-	slog.Info("waiting for sign-in (URL check, timeout 5min)...")
-	deadline := time.Now().Add(5 * time.Minute)
-	signedIn := false
-	for time.Now().Before(deadline) {
+	slog.Info("waiting for sign-in (URL check)...")
+	deadline := deadlineFromContext(ctx, defaultLoginTimeout)
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	lastProgress := time.Now()
+
+	for {
 		var currentURL string
-		if err := chromedp.Run(chromeCtx,
-			chromedp.Evaluate("window.location.href", &currentURL),
-		); err != nil {
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-		if strings.Contains(currentURL, "myaccount.google.com") {
-			signedIn = true
+		if err := chromedp.Run(chromeCtx, chromedp.Location(&currentURL)); err != nil {
+			slog.Debug("location check failed (retrying)", "err", err)
+		} else if strings.Contains(currentURL, "myaccount.google.com") {
 			break
 		}
-		time.Sleep(1 * time.Second)
-	}
 
-	if !signedIn {
-		return "", fmt.Errorf("sign-in timeout")
+		if time.Now().After(deadline) {
+			return "", errors.New("sign-in timeout")
+		}
+		if time.Since(lastProgress) >= progressInterval {
+			slog.Info("still waiting for sign-in", "remaining", time.Until(deadline).Round(time.Second))
+			lastProgress = time.Now()
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
 	}
 	slog.Info("signed in, navigating to security domain URL...")
 
@@ -165,55 +264,42 @@ func RequestSharedKey(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("navigate to security domain: %w", err)
 	}
 
-	// Inject JS that intercepts window.mm.setVaultSharedKeys and stores
-	// the vault keys in a global variable we can poll.
-	jsInject := `
-		window.mm = {
-			setVaultSharedKeys: function(str, vaultKeys) {
-				window.__e2ee_vault_keys = vaultKeys;
-			},
-			closeView: function() {
-				window.__e2ee_closed = true;
-			}
-		};
-	`
-	if err := chromedp.Run(chromeCtx, chromedp.Evaluate(jsInject, nil)); err != nil {
-		return "", fmt.Errorf("inject js: %w", err)
+	// Fallback for pages that mutated window.mm instead of assigning it.
+	if err := chromedp.Run(chromeCtx, chromedp.Evaluate(wrapVaultKeysJS, nil)); err != nil {
+		slog.Debug("post-load vault keys wrap failed", "err", err)
 	}
 
-	// Wait for vault keys to be set (up to 30 seconds).
+	// Wait for vault keys to be set (up to 30 seconds by default).
 	slog.Info("waiting for E2EE vault keys...")
-	waitDeadline := time.Now().Add(30 * time.Second)
-	var vaultKeysStr string
-	for time.Now().Before(waitDeadline) {
-		var result interface{}
+	keysDeadline := deadlineFromContext(ctx, defaultKeysTimeout)
+	var vaultKeysJSON string
+	for {
+		var closed bool
 		if err := chromedp.Run(chromeCtx,
-			chromedp.Evaluate("window.__e2ee_vault_keys || null", &result),
+			chromedp.Evaluate(`window.__e2ee_closed === true`, &closed),
+			chromedp.Evaluate(`JSON.stringify(window.__e2ee_vault_keys ?? null)`, &vaultKeysJSON),
 		); err != nil {
-			time.Sleep(200 * time.Millisecond)
-			continue
+			return "", fmt.Errorf("read vault keys: %w", err)
 		}
-		if result != nil {
-			switch v := result.(type) {
-			case string:
-				vaultKeysStr = v
-			default:
-				b, _ := json.Marshal(result)
-				vaultKeysStr = string(b)
-			}
-			if vaultKeysStr != "" {
-				break
-			}
+		if closed {
+			return "", errors.New("shared key page closed without providing the keys")
 		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		if vaultKeysJSON != "" && vaultKeysJSON != "null" {
+			break
+		}
+		if time.Now().After(keysDeadline) {
+			return "", errors.New("timeout waiting for E2EE vault keys")
+		}
 
-	if vaultKeysStr == "" {
-		return "", fmt.Errorf("timeout waiting for E2EE vault keys")
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
 	}
 
 	// Parse the vault keys JSON to extract the shared key.
-	sharedKey, err := extractSharedKey(vaultKeysStr)
+	sharedKey, err := extractSharedKey(vaultKeysJSON)
 	if err != nil {
 		return "", fmt.Errorf("extract shared key: %w", err)
 	}
@@ -232,24 +318,27 @@ func extractSharedKey(vaultKeysStr string) ([]byte, error) {
 
 	entries, ok := vaultKeys["finder_hw"]
 	if !ok || len(entries) == 0 {
-		return nil, fmt.Errorf("no finder_hw key in vault keys")
+		return nil, errors.New("no finder_hw key in vault keys")
 	}
 
 	keyMap, ok := entries[0]["key"].(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("no key data in finder_hw entry")
+		return nil, errors.New("no key data in finder_hw entry")
 	}
 
 	// key is a JSON object with numeric string keys "0".."31" mapping to
 	// byte values (e.g., {"0": 0x12, "1": 0x34, ...}).
-	key := make([]byte, 0, 32)
+	var key [32]byte
 	for i := 0; i < 32; i++ {
-		s := fmt.Sprintf("%d", i)
-		if v, ok := keyMap[s].(float64); ok {
-			key = append(key, byte(int(v)))
-		} else {
+		raw, ok := keyMap[strconv.Itoa(i)]
+		if !ok {
 			return nil, fmt.Errorf("missing key byte %d", i)
 		}
+		f, ok := raw.(float64)
+		if !ok || math.Trunc(f) != f || f < 0 || f > 255 {
+			return nil, fmt.Errorf("invalid key byte %d: %v", i, raw)
+		}
+		key[i] = byte(f)
 	}
-	return key, nil
+	return key[:], nil
 }
