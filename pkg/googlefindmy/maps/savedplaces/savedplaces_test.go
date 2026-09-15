@@ -441,3 +441,113 @@ func TestExtractListIDInvalid(t *testing.T) {
 		t.Fatal("expected error for invalid URL")
 	}
 }
+
+func TestFetchListRejectsInvalidID(t *testing.T) {
+	client := NewClient(map[string]string{"SID": "x"})
+	if _, err := client.FetchList(context.Background(), ListSpec{ID: "bad&id"}); err == nil {
+		t.Fatal("expected an error for an invalid list ID before any HTTP call")
+	}
+}
+
+func TestFetchListsAggregatesErrors(t *testing.T) {
+	response := []any{
+		[]any{
+			nil, nil, nil, nil, "Good", nil, nil, nil,
+			[]any{
+				[]any{nil, []any{nil, nil, "", nil, "Addr", []any{nil, nil, 1.0, 2.0}}, "Place", ""},
+			},
+		},
+	}
+	body, _ := json.Marshal(response)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.RawQuery, "good_list") {
+			_, _ = w.Write(body)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := NewClient(map[string]string{"SID": "x"}).
+		WithHTTPClient(srv.Client()).
+		WithAPIURL(srv.URL)
+
+	lists, err := client.FetchLists(context.Background(), []ListSpec{{ID: "good_list"}, {ID: "bad_list"}})
+	if err == nil {
+		t.Fatal("expected the failed list to be reported")
+	}
+	if !strings.Contains(err.Error(), "bad_list") {
+		t.Fatalf("error = %v, want it to mention bad_list", err)
+	}
+	if len(lists) != 1 || lists[0].Name != "Good" {
+		t.Fatalf("lists = %#v, want the successful list", lists)
+	}
+}
+
+func TestClientAuthUser(t *testing.T) {
+	response := []any{
+		[]any{
+			nil, nil, nil, nil, "List", nil, nil, nil,
+			[]any{
+				[]any{nil, []any{nil, nil, "", nil, "Addr", []any{nil, nil, 1.0, 2.0}}, "Place", ""},
+			},
+		},
+	}
+	body, _ := json.Marshal(response)
+
+	var gotAuthUser string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthUser = r.URL.Query().Get("authuser")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	client := NewClient(map[string]string{"SID": "x"}).
+		WithHTTPClient(srv.Client()).
+		WithAPIURL(srv.URL).
+		WithAuthUser(2)
+
+	if _, err := client.FetchList(context.Background(), ListSpec{ID: "some_list"}); err != nil {
+		t.Fatalf("FetchList: %v", err)
+	}
+	if gotAuthUser != "2" {
+		t.Fatalf("authuser = %q, want 2", gotAuthUser)
+	}
+}
+
+func TestParseEntityListPlaceID(t *testing.T) {
+	const placeID = "ChIJN1t_tDeuEmsRUsoyG83frY4"
+	data := []any{
+		[]any{
+			nil, nil, nil, nil, "Test", nil, nil, nil,
+			[]any{
+				[]any{nil, []any{nil, nil, "", nil, "Addr", []any{nil, nil, 1.0, 2.0}}, "Place", "", nil, nil, nil, []any{[]any{1}, []any{placeID}}},
+			},
+		},
+	}
+
+	places, _ := parseEntityList(data)
+	if len(places) != 1 {
+		t.Fatalf("got %d places, want 1", len(places))
+	}
+	if places[0].ID != placeID {
+		t.Fatalf("place ID = %q, want %q", places[0].ID, placeID)
+	}
+}
+
+func TestParseEntityListKeepsZeroZeroCoordinates(t *testing.T) {
+	data := []any{
+		[]any{
+			nil, nil, nil, nil, "Test", nil, nil, nil,
+			[]any{
+				[]any{nil, []any{nil, nil, "", nil, "Addr", []any{nil, nil, 0.0, 0.0}}, "Null Island", ""},
+			},
+		},
+	}
+
+	places, _ := parseEntityList(data)
+	if len(places) != 1 {
+		t.Fatalf("got %d places, want 1 (coordinates are present, even at 0,0)", len(places))
+	}
+}

@@ -5,6 +5,7 @@ package savedplaces
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -108,9 +109,10 @@ func extractListID(value string) (string, error) {
 
 // Client calls the Google Maps saved-place entitylist API.
 type Client struct {
-	cookies map[string]string
-	hc      *http.Client
-	apiURL  string
+	cookies  map[string]string
+	hc       *http.Client
+	apiURL   string
+	authuser int
 }
 
 // NewClient creates a saved-places client with the given cookies.
@@ -120,6 +122,13 @@ func NewClient(cookies map[string]string) *Client {
 		hc:      httpclient.Default(),
 		apiURL:  "https://www.google.com/maps/preview/entitylist",
 	}
+}
+
+// WithAuthUser selects the Google account index sent to the entitylist API
+// (default 0).
+func (c *Client) WithAuthUser(authuser int) *Client {
+	c.authuser = authuser
+	return c
 }
 
 // WithHTTPClient sets a custom HTTP client (useful for testing).
@@ -134,8 +143,13 @@ func (c *Client) WithAPIURL(u string) *Client {
 	return c
 }
 
-// FetchList fetches a single saved list and returns its places.
+// FetchList fetches a single saved list and returns its places. The list ID
+// must be a raw "[A-Za-z0-9_-]+" token; URLs are accepted through
+// ParseListSpecs, which normalizes them first.
 func (c *Client) FetchList(ctx context.Context, spec ListSpec) (List, error) {
+	if !rawListIDPattern.MatchString(spec.ID) {
+		return List{}, fmt.Errorf("fetch list: invalid list id %q", spec.ID)
+	}
 	places, apiName, err := c.fetchListViaHTTP(ctx, spec.ID)
 	if err != nil {
 		return List{}, fmt.Errorf("fetch list %q: %w", spec.ID, err)
@@ -147,26 +161,31 @@ func (c *Client) FetchList(ctx context.Context, spec ListSpec) (List, error) {
 	return List{ID: spec.ID, Name: name, Places: places}, nil
 }
 
-// FetchLists fetches multiple saved lists. Errors for individual lists are
-// logged and skipped; the returned slice contains only successful results.
+// FetchLists fetches multiple saved lists. Lists that fail are skipped, and
+// their errors are combined into the returned error so callers can tell "no
+// lists" from "all lists failed".
 func (c *Client) FetchLists(ctx context.Context, specs []ListSpec) ([]List, error) {
-	var lists []List
+	var (
+		lists []List
+		errs  []error
+	)
 	for _, spec := range specs {
 		list, err := c.FetchList(ctx, spec)
 		if err != nil {
-			slog.Warn("HTTP fetch failed", "id", spec.ID, "err", err)
+			slog.Warn("saved list fetch failed", "id", spec.ID, "err", err)
+			errs = append(errs, fmt.Errorf("list %q: %w", spec.ID, err))
 			continue
 		}
 		slog.Debug("saved list fetched", "name", list.Name, "places", len(list.Places))
 		lists = append(lists, list)
 	}
-	return lists, nil
+	return lists, errors.Join(errs...)
 }
 
 func (c *Client) fetchListViaHTTP(ctx context.Context, listID string) ([]Place, string, error) {
 	queryURL := fmt.Sprintf(
-		"%s/getlist?authuser=0&hl=en&gl=us&pb=!1m6!1s%s!2e3!3m1!1e1!3m1!1e9!2e2!3e2!4i500",
-		c.apiURL, listID,
+		"%s/getlist?authuser=%d&hl=en&gl=us&pb=!1m6!1s%s!2e3!3m1!1e1!3m1!1e9!2e2!3e2!4i500",
+		c.apiURL, c.authuser, listID,
 	)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, queryURL, nil)
@@ -250,6 +269,7 @@ func parseEntityList(data []any) ([]Place, string) {
 				var address, note string
 				var lat, lon float64
 				var createdAt *time.Time
+				hasCoords := false
 
 				if meta, ok := placeArr[1].([]any); ok {
 					if len(meta) >= 5 {
@@ -261,6 +281,7 @@ func parseEntityList(data []any) ([]Place, string) {
 						if coords, ok := meta[5].([]any); ok && len(coords) >= 4 {
 							lat, _ = coords[2].(float64)
 							lon, _ = coords[3].(float64)
+							hasCoords = true
 						}
 					}
 				}
@@ -272,7 +293,7 @@ func parseEntityList(data []any) ([]Place, string) {
 					createdAt = parseTimestamp(placeArr[9])
 				}
 
-				if lat == 0 && lon == 0 {
+				if !hasCoords {
 					continue
 				}
 
@@ -283,6 +304,7 @@ func parseEntityList(data []any) ([]Place, string) {
 				seen[key] = true
 
 				places = append(places, Place{
+					ID:        extractPlaceID(placeArr),
 					Name:      name,
 					Address:   address,
 					Notes:     note,
@@ -295,6 +317,54 @@ func parseEntityList(data []any) ([]Place, string) {
 	}
 
 	return places, listName
+}
+
+// extractPlaceID probes the entitylist payload for an opaque place ID. The
+// exact position is undocumented and varies by response version, so this is
+// best-effort and returns "" when no ID-shaped string is found.
+func extractPlaceID(placeArr []any) string {
+	if len(placeArr) <= 7 {
+		return ""
+	}
+	raw, ok := placeArr[7].([]any)
+	if !ok {
+		return ""
+	}
+	return firstIDString(raw)
+}
+
+func firstIDString(values []any) string {
+	for _, v := range values {
+		switch val := v.(type) {
+		case string:
+			if looksLikePlaceID(val) {
+				return val
+			}
+		case []any:
+			if s := firstIDString(val); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// looksLikePlaceID accepts the opaque alphanumeric IDs Google uses.
+func looksLikePlaceID(s string) bool {
+	if len(s) < 4 || len(s) > 128 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9',
+			r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r == '_', r == '-', r == ':':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func parseTimestamp(value any) *time.Time {
