@@ -94,7 +94,10 @@ supports a persistent profile:
 cfg := chrome.Config{
     UserDataDir: "/path/to/chrome-profile", // reuse a signed-in profile
 }
-res, err := browser.RunOAuthFlow(ctx, cfg, "")
+_, err := browser.RunOAuthFlow(ctx, cfg, "")
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 Sign the profile in **once**, outside the automation, then close it:
