@@ -31,7 +31,6 @@ import (
 
 const (
 	defaultLoginTimeout = 5 * time.Minute
-	defaultKeysTimeout  = 30 * time.Second
 	pollInterval        = 500 * time.Millisecond
 	progressInterval    = 30 * time.Second
 )
@@ -153,36 +152,63 @@ func buildSecurityDomainURL() (string, error) {
 	return "https://accounts.google.com/encryption/unlock/android?kdi=" + kdi, nil
 }
 
+// vaultKeysJS defines the helpers shared by the new-document hook and the
+// post-load fallback. wrapVault observes window.mm's setVaultSharedKeys and
+// closeView both when they already exist and when the page assigns them later
+// — the security-domain page defines them only after its screen-lock challenge.
+const vaultKeysJS = `
+	const wrapMethod = (obj, name, marker, capture) => {
+		if (typeof obj[name] === 'function') {
+			if (obj[marker]) return;
+			const orig = obj[name];
+			obj[name] = function () {
+				try { capture.apply(null, arguments); } catch (e) {}
+				return orig.apply(this, arguments);
+			};
+			obj[marker] = true;
+			return;
+		}
+		if (obj[marker]) return;
+		let value;
+		Object.defineProperty(obj, name, {
+			configurable: true,
+			enumerable: true,
+			get: () => value,
+			set: (fn) => {
+				value = typeof fn === 'function'
+					? function () {
+						try { capture.apply(null, arguments); } catch (e) {}
+						return fn.apply(this, arguments);
+					}
+					: fn;
+			},
+		});
+		obj[marker] = true;
+	};
+	const wrapVault = (v) => {
+		if (!v || typeof v !== 'object') return v;
+		wrapMethod(v, 'setVaultSharedKeys', '__fmd_keys_wrapped', function (str, keys) {
+			window.__e2ee_vault_keys = keys;
+		});
+		wrapMethod(v, 'closeView', '__fmd_close_wrapped', function () {
+			window.__e2ee_closed = true;
+		});
+		return v;
+	};
+`
+
 // vaultKeysHookJS installs the capture hook before any page script runs. The
 // Google page assigns window.mm; the property setter wraps that assignment so
 // setVaultSharedKeys/closeView are observed without replacing the page's own
 // object (the page's methods are still called).
 const vaultKeysHookJS = `
 (() => {
-	const wrap = (v) => {
-		if (!v || typeof v !== 'object') return v;
-		const wrapFn = (name, marker, capture) => {
-			if (typeof v[name] !== 'function' || v[marker]) return;
-			const orig = v[name];
-			v[name] = function () {
-				try { capture.apply(null, arguments); } catch (e) {}
-				return orig.apply(this, arguments);
-			};
-			v[marker] = true;
-		};
-		wrapFn('setVaultSharedKeys', '__fmd_keys_wrapped', function (str, keys) {
-			window.__e2ee_vault_keys = keys;
-		});
-		wrapFn('closeView', '__fmd_close_wrapped', function () {
-			window.__e2ee_closed = true;
-		});
-		return v;
-	};
+` + vaultKeysJS + `
 	let mm = {};
 	Object.defineProperty(window, 'mm', {
 		configurable: true,
 		get: () => mm,
-		set: (v) => { mm = wrap(v); },
+		set: (v) => { mm = wrapVault(v); },
 	});
 })();
 `
@@ -191,33 +217,19 @@ const vaultKeysHookJS = `
 // fallback for pages that mutate the object instead of assigning it.
 const wrapVaultKeysJS = `
 (() => {
-	const v = window.mm;
-	if (!v || typeof v !== 'object') return false;
-	const wrapFn = (name, marker, capture) => {
-		if (typeof v[name] !== 'function' || v[marker]) return;
-		const orig = v[name];
-		v[name] = function () {
-			try { capture.apply(null, arguments); } catch (e) {}
-			return orig.apply(this, arguments);
-		};
-		v[marker] = true;
-	};
-	wrapFn('setVaultSharedKeys', '__fmd_keys_wrapped', function (str, keys) {
-		window.__e2ee_vault_keys = keys;
-	});
-	wrapFn('closeView', '__fmd_close_wrapped', function () {
-		window.__e2ee_closed = true;
-	});
-	return true;
+` + vaultKeysJS + `
+	return wrapVault(window.mm) === window.mm;
 })();
 `
 
 // RequestSharedKey opens Chrome, waits for the user to sign in, navigates to
 // the security domain URL, and intercepts the window.mm.setVaultSharedKeys
-// call to extract the E2EE shared key. Returns the hex-encoded shared key.
-// The sign-in wait honors the context deadline; the default is five minutes.
-// cfg controls the Chrome launch; pass a persistent UserDataDir so later runs
-// reuse an existing sign-in instead of signing in again.
+// call to extract the E2EE shared key. The security-domain page asks for the
+// device screen lock before it releases the keys; the user enters it in the
+// Chrome window. Returns the hex-encoded shared key. The waits honor the
+// context deadline; the default is five minutes. cfg controls the Chrome
+// launch; pass a persistent UserDataDir so later runs reuse an existing
+// sign-in instead of signing in again.
 func RequestSharedKey(ctx context.Context, cfg chrome.Config) (string, error) {
 	if err := chrome.CheckProfileFree(cfg.UserDataDir); err != nil {
 		return "", err
@@ -288,9 +300,13 @@ func RequestSharedKey(ctx context.Context, cfg chrome.Config) (string, error) {
 		slog.Debug("post-load vault keys wrap failed", "err", err)
 	}
 
-	// Wait for vault keys to be set (up to 30 seconds by default).
+	// The page shows an interactive screen-lock challenge ("Enter your
+	// screen lock for the selected device") before it releases the vault
+	// keys, so the wait is interactive and honors the caller's deadline;
+	// otherwise it gets the same window as the sign-in.
+	slog.Info("enter the screen lock PIN of the device in the Chrome window to unlock the E2EE vault")
 	slog.Info("waiting for E2EE vault keys...")
-	keysDeadline := deadlineFromContext(ctx, defaultKeysTimeout)
+	keysDeadline := deadlineFromContext(ctx, defaultLoginTimeout)
 	var vaultKeysJSON string
 	for {
 		var closed bool
@@ -307,7 +323,11 @@ func RequestSharedKey(ctx context.Context, cfg chrome.Config) (string, error) {
 			break
 		}
 		if time.Now().After(keysDeadline) {
-			return "", fmt.Errorf("%w waiting for E2EE vault keys", ErrTimeout)
+			return "", fmt.Errorf("%w waiting for E2EE vault keys (enter the device screen lock PIN in the Chrome window)", ErrTimeout)
+		}
+		if time.Since(lastProgress) >= progressInterval {
+			slog.Info("still waiting for E2EE vault keys", "remaining", time.Until(keysDeadline).Round(time.Second))
+			lastProgress = time.Now()
 		}
 
 		select {
