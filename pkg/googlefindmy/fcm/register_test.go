@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -335,6 +336,41 @@ func TestIsTransient(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isTransient(tc.err); got != tc.want {
 				t.Fatalf("isTransient(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFlexUint64(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    flexUint64
+		wantErr bool
+	}{
+		{"number", `42`, 42, false},
+		{"string", `"42"`, 42, false},
+		{"max", `"18446744073709551615"`, flexUint64(math.MaxUint64), false},
+		{"overflow", `"18446744073709551616"`, 0, true},
+		{"negative", `"-1"`, 0, true},
+		{"garbage", `"abc"`, 0, true},
+		{"float", `1.5`, 0, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got flexUint64
+			err := json.Unmarshal([]byte(tc.input), &got)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error for %s", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unmarshal %s: %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("value = %d, want %d", got, tc.want)
 			}
 		})
 	}

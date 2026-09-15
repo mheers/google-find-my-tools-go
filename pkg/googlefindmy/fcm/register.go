@@ -56,6 +56,9 @@ func (f *flexUint64) UnmarshalJSON(b []byte) error {
 	if !ok {
 		return fmt.Errorf("flexUint64: cannot parse %q", s)
 	}
+	if !n.IsUint64() {
+		return fmt.Errorf("flexUint64: value %q overflows uint64", s)
+	}
 	*f = flexUint64(n.Uint64())
 	return nil
 }
