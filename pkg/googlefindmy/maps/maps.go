@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/network"
@@ -172,6 +173,10 @@ type Client struct {
 	cookies map[string]string
 	hc      *http.Client
 	apiURL  string
+
+	mu                   sync.Mutex
+	preferredAuthUser    int
+	hasPreferredAuthUser bool
 }
 
 // NewClient creates a new Maps client with the given cookies.
@@ -211,20 +216,46 @@ func (c *Client) GetState(ctx context.Context) ([]Contact, error) {
 	return parseContacts(data), nil
 }
 
-// callAPI tries each authuser index (0, 1, 2) against the Maps API.
-// Returns the full parsed JSON array on first success.
+// callAPI tries each authuser index (0, 1, 2) against the Maps API,
+// preferring the index that succeeded last. Returns the full parsed JSON
+// array on first success.
 func (c *Client) callAPI(ctx context.Context) ([]any, error) {
-	for _, authuser := range []int{0, 1, 2} {
+	for _, authuser := range c.authUserOrder() {
 		result, err := c.tryAuthUser(ctx, authuser)
 		if err != nil {
 			slog.Debug("maps api authuser failed", "authuser", authuser, "err", err)
 			continue
 		}
 		if result != nil {
+			c.rememberAuthUser(authuser)
 			return result, nil
 		}
 	}
 	return nil, fmt.Errorf("%w: all authuser indices failed", ErrCookiesExpired)
+}
+
+// authUserOrder returns the account indices to try, starting with the one that
+// worked previously.
+func (c *Client) authUserOrder() []int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.hasPreferredAuthUser {
+		return []int{0, 1, 2}
+	}
+	order := []int{c.preferredAuthUser}
+	for _, authuser := range []int{0, 1, 2} {
+		if authuser != c.preferredAuthUser {
+			order = append(order, authuser)
+		}
+	}
+	return order
+}
+
+func (c *Client) rememberAuthUser(authuser int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.preferredAuthUser = authuser
+	c.hasPreferredAuthUser = true
 }
 
 func (c *Client) tryAuthUser(ctx context.Context, authuser int) ([]any, error) {

@@ -34,22 +34,19 @@ const (
 	mcsSelectiveAckID = 12
 )
 
-// tags maps known FCM proto message types to their MCS wire tag value.
-// Note: the keys use the actual package name "fcm" (not the import alias
-// "fcmpb") because fmt.Sprintf("%T", msg) resolves to the package
-// declaration name, not the import alias.
-var tags = map[string]int{
-	"*fcm.HeartbeatPing":     0,
-	"*fcm.HeartbeatAck":      1,
-	"*fcm.LoginRequest":      2,
-	"*fcm.LoginResponse":     3,
-	"*fcm.Close":             4,
-	"*fcm.IqStanza":          7,
-	"*fcm.DataMessageStanza": 8,
-	"*fcm.StreamErrorStanza": 10,
+// tagByName maps protobuf message names to their MCS wire tag value.
+var tagByName = map[string]int{
+	"mcs_proto.HeartbeatPing":     0,
+	"mcs_proto.HeartbeatAck":      1,
+	"mcs_proto.LoginRequest":      2,
+	"mcs_proto.LoginResponse":     3,
+	"mcs_proto.Close":             4,
+	"mcs_proto.IqStanza":          7,
+	"mcs_proto.DataMessageStanza": 8,
+	"mcs_proto.StreamErrorStanza": 10,
 }
 
-var tagNames = map[int]func() proto.Message{
+var newMessageByTag = map[int]func() proto.Message{
 	0:  func() proto.Message { return &fcmpb.HeartbeatPing{} },
 	1:  func() proto.Message { return &fcmpb.HeartbeatAck{} },
 	2:  func() proto.Message { return &fcmpb.LoginRequest{} },
@@ -80,6 +77,11 @@ type MCSClient struct {
 	// receivedPersistentIDs holds message IDs that were already delivered so
 	// the server can be told about them on login and stop redelivering.
 	receivedPersistentIDs []string
+
+	// cryptoOnce guards the lazy parse of the push credentials.
+	cryptoOnce sync.Once
+	crypto     *pushCrypto
+	cryptoErr  error
 }
 
 // NewMCSClient creates a new MCS client.
@@ -268,7 +270,7 @@ func (c *MCSClient) Listen() error {
 			slog.Debug("mcs iq stanza")
 		case *fcmpb.DataMessageStanza:
 			slog.Debug("mcs data message stanza")
-			persistentID := handleDataMessage(c.creds, m, c.handler)
+			persistentID := c.handleDataMessage(m)
 			if persistentID != "" {
 				c.rememberPersistentID(persistentID)
 				if err := sendSelectiveAck(c, persistentID); err != nil {
@@ -331,8 +333,7 @@ func (c *MCSClient) Close() error {
 // sendMsg marshals, frames, and writes a protobuf message to the MCS
 // connection. The version byte is only included before the first receive.
 func (c *MCSClient) sendMsg(msg proto.Message) error {
-	tn := fmt.Sprintf("%T", msg)
-	tag, ok := tags[tn]
+	tag, ok := tagByName[string(proto.MessageName(msg))]
 	if !ok {
 		return fmt.Errorf("mcs: unknown tag for %T", msg)
 	}
@@ -419,7 +420,7 @@ func (c *MCSClient) readMsg() (proto.Message, error) {
 		return nil, fmt.Errorf("mcs read payload: %w", err)
 	}
 
-	newFn, ok := tagNames[tag]
+	newFn, ok := newMessageByTag[tag]
 	if !ok {
 		return nil, fmt.Errorf("mcs: unknown tag %d", tag)
 	}
@@ -491,34 +492,58 @@ func decodeVarint32(r io.Reader) (uint32, error) {
 
 // --- Web Push ECE Decryption (RFC 8291) ---
 
-// handleDataMessage decrypts a data message and invokes the handler. It
-// returns the message's persistent ID, which must be acknowledged even when
-// decryption or handling fails.
-func handleDataMessage(creds *FCMCredentials, msg *fcmpb.DataMessageStanza, handler PushHandler) string {
-	slog.Debug("mcs data message",
-		"app_data", len(msg.GetAppData()),
-		"raw_data_len", len(msg.GetRawData()))
-
-	persistentID := msg.GetPersistentId()
-	decrypted, err := decryptWebPushECE(creds, msg)
-	if err != nil {
-		slog.Debug("mcs decrypt failed", "err", err)
-		return persistentID
-	}
-
-	slog.Debug("mcs decrypted message", "bytes", len(decrypted))
-	if persistentID != "" && handler != nil {
-		handler(decrypted, persistentID)
-	}
-	return persistentID
+// pushCrypto holds the parsed per-credential key material. Parsing the
+// PKCS#8 key and converting it to ECDH once per client (instead of once per
+// message) keeps the hot path cheap.
+type pushCrypto struct {
+	priv            *ecdh.PrivateKey
+	clientPub       []byte
+	authSecret      []byte
+	expectedSubtype string
 }
 
-// decryptWebPushECE decrypts an FCM Web Push (ECE, aesgcm) payload.
+func newPushCrypto(creds *FCMCredentials) (*pushCrypto, error) {
+	if creds == nil || creds.Keys == nil {
+		return nil, errors.New("mcs: missing push keys")
+	}
+	privDER, err := decodeBase64URL(creds.Keys.Private)
+	if err != nil {
+		return nil, fmt.Errorf("decode private key: %w", err)
+	}
+	privKey, err := x509.ParsePKCS8PrivateKey(privDER)
+	if err != nil {
+		return nil, fmt.Errorf("parse private key: %w", err)
+	}
+	ecdsaPriv, ok := privKey.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, errors.New("private key not ECDSA")
+	}
+	ecdhPriv, err := ecdsaPriv.ECDH()
+	if err != nil {
+		return nil, fmt.Errorf("ecdh conversion: %w", err)
+	}
+	authSecret, err := decodeBase64URL(creds.Keys.Secret)
+	if err != nil {
+		return nil, fmt.Errorf("decode auth secret: %w", err)
+	}
+	expectedSubtype := ""
+	if creds.GCM != nil {
+		expectedSubtype = creds.GCM.AppID
+	}
+	return &pushCrypto{
+		priv:            ecdhPriv,
+		clientPub:       ecdhPriv.PublicKey().Bytes(),
+		authSecret:      authSecret,
+		expectedSubtype: expectedSubtype,
+	}, nil
+}
+
+// decrypt decrypts an FCM Web Push (ECE, aesgcm) payload.
 //
 // SECURITY: key material derived here (shared secret, auth secret, HKDF
 // intermediates, AES key/nonce) must never be logged. Log only lengths and
 // error messages at most.
-func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]byte, error) {
+func (p *pushCrypto) decrypt(msg *fcmpb.DataMessageStanza) ([]byte, error) {
 	var dhB64, saltB64, subtype string
 	for _, a := range msg.GetAppData() {
 		switch a.GetKey() {
@@ -531,14 +556,14 @@ func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]b
 		}
 	}
 	if dhB64 == "" || saltB64 == "" {
-		return nil, fmt.Errorf("missing crypto-key or encryption")
+		return nil, errors.New("missing crypto-key or encryption")
 	}
 
 	// The subtype matches the FCM sender's AppID. Log a mismatch so misconfig
 	// is visible, but still attempt decryption: the consumer filters messages
 	// by request UUID.
-	if subtype != "" && creds.GCM != nil && subtype != creds.GCM.AppID {
-		slog.Debug("mcs subtype mismatch", "subtype", subtype, "app_id", creds.GCM.AppID)
+	if subtype != "" && p.expectedSubtype != "" && subtype != p.expectedSubtype {
+		slog.Debug("mcs subtype mismatch", "subtype", subtype, "app_id", p.expectedSubtype)
 	}
 
 	dhRaw, err := decodeBase64URL(dhB64)
@@ -550,48 +575,24 @@ func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]b
 		return nil, fmt.Errorf("decode salt: %w", err)
 	}
 
-	privDER, err := decodeBase64URL(creds.Keys.Private)
-	if err != nil {
-		return nil, fmt.Errorf("decode private key: %w", err)
-	}
-	privKey, err := x509.ParsePKCS8PrivateKey(privDER)
-	if err != nil {
-		return nil, fmt.Errorf("parse private key: %w", err)
-	}
-	ecdsaPriv, ok := privKey.(*ecdsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("private key not ECDSA")
-	}
-
-	ecdhPriv, err := ecdsaPriv.ECDH()
-	if err != nil {
-		return nil, fmt.Errorf("ecdh conversion: %w", err)
-	}
 	ecdhPub, err := ecdh.P256().NewPublicKey(dhRaw)
 	if err != nil {
 		return nil, fmt.Errorf("parse server public key: %w", err)
 	}
-
-	sharedSecret, err := ecdhPriv.ECDH(ecdhPub)
+	sharedSecret, err := p.priv.ECDH(ecdhPub)
 	if err != nil {
 		return nil, fmt.Errorf("ecdh: %w", err)
 	}
 
-	authSecret, err := decodeBase64URL(creds.Keys.Secret)
-	if err != nil {
-		return nil, fmt.Errorf("decode auth secret: %w", err)
-	}
-
 	// ECE key derivation using aesgcm (matching Python http_ece version="aesgcm").
-	clientPub := ecdhPriv.PublicKey().Bytes()
-	context := make([]byte, 0, len("P-256\x00")+2+len(clientPub)+2+len(dhRaw))
+	context := make([]byte, 0, len("P-256\x00")+2+len(p.clientPub)+2+len(dhRaw))
 	context = append(context, []byte("P-256\x00")...)
-	context = binary.BigEndian.AppendUint16(context, uint16(len(clientPub)))
-	context = append(context, clientPub...)
+	context = binary.BigEndian.AppendUint16(context, uint16(len(p.clientPub)))
+	context = append(context, p.clientPub...)
 	context = binary.BigEndian.AppendUint16(context, uint16(len(dhRaw)))
 	context = append(context, dhRaw...)
 
-	prk1 := hkdf.Extract(sha256.New, sharedSecret, authSecret)
+	prk1 := hkdf.Extract(sha256.New, sharedSecret, p.authSecret)
 	derived := make([]byte, 32)
 	authInfo := []byte("Content-Encoding: auth\x00")
 	if _, err := io.ReadFull(hkdf.Expand(sha256.New, prk1, authInfo), derived); err != nil {
@@ -612,9 +613,6 @@ func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]b
 	}
 
 	rawData := msg.GetRawData()
-	if len(rawData) == 0 {
-		return nil, fmt.Errorf("no raw_data in message")
-	}
 	if len(rawData) < 16+2 {
 		return nil, fmt.Errorf("raw_data too short: %d", len(rawData))
 	}
@@ -640,6 +638,46 @@ func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]b
 		return nil, fmt.Errorf("padding %d exceeds decrypted length %d", padLen, len(decrypted))
 	}
 	return decrypted[2+padLen:], nil
+}
+
+// handleDataMessage decrypts a data message and invokes the handler. It
+// returns the message's persistent ID, which must be acknowledged even when
+// decryption or handling fails.
+func (c *MCSClient) handleDataMessage(msg *fcmpb.DataMessageStanza) string {
+	slog.Debug("mcs data message",
+		"app_data", len(msg.GetAppData()),
+		"raw_data_len", len(msg.GetRawData()))
+
+	persistentID := msg.GetPersistentId()
+	pc, err := c.pushCrypto()
+	if err != nil {
+		slog.Debug("mcs decrypt failed", "err", err)
+		return persistentID
+	}
+	decrypted, err := pc.decrypt(msg)
+	if err != nil {
+		slog.Debug("mcs decrypt failed", "err", err)
+		return persistentID
+	}
+
+	slog.Debug("mcs decrypted message", "bytes", len(decrypted))
+	if persistentID != "" && c.handler != nil {
+		c.handler(decrypted, persistentID)
+	}
+	return persistentID
+}
+
+// pushCrypto parses (once) and returns the key material for the client's
+// credentials.
+func (c *MCSClient) pushCrypto() (*pushCrypto, error) {
+	c.cryptoOnce.Do(func() {
+		if c.creds == nil {
+			c.cryptoErr = errors.New("mcs: missing credentials")
+			return
+		}
+		c.crypto, c.cryptoErr = newPushCrypto(c.creds)
+	})
+	return c.crypto, c.cryptoErr
 }
 
 // decodeBase64URL decodes padded and unpadded base64url values. FCM sends

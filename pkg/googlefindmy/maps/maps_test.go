@@ -232,3 +232,41 @@ func FuzzParseContacts(f *testing.F) {
 		_ = parseContacts(parsed)
 	})
 }
+
+func TestGetStateCachesSuccessfulAuthUser(t *testing.T) {
+	var hits []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authuser := r.URL.Query().Get("authuser")
+		hits = append(hits, authuser)
+		if authuser == "0" {
+			_, _ = w.Write([]byte(")]}'\n[null,null,null,null,null,null,\"GgA=\"]"))
+			return
+		}
+		body, _ := json.Marshal(sharedContactResponse())
+		_, _ = w.Write(append([]byte(")]}'\n"), body...))
+	}))
+	defer srv.Close()
+
+	client := NewClient(map[string]string{"SID": "x"}).
+		WithHTTPClient(srv.Client()).
+		WithAPIURL(srv.URL)
+
+	for i := 0; i < 2; i++ {
+		if _, err := client.GetState(context.Background()); err != nil {
+			t.Fatalf("GetState #%d: %v", i+1, err)
+		}
+	}
+
+	assert.Equal(t, []string{"0", "1", "1"}, hits)
+}
+
+func TestAuthUserOrder(t *testing.T) {
+	client := NewClient(nil)
+	assert.Equal(t, []int{0, 1, 2}, client.authUserOrder())
+
+	client.rememberAuthUser(2)
+	assert.Equal(t, []int{2, 0, 1}, client.authUserOrder())
+
+	client.rememberAuthUser(1)
+	assert.Equal(t, []int{1, 0, 2}, client.authUserOrder())
+}

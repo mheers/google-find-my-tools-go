@@ -30,7 +30,7 @@ import (
 // testPushCredentials generates a P-256 key pair and auth secret the same way
 // GenerateKeys does, returning credentials plus the ECDH private key so tests
 // can play the role of the FCM server.
-func testPushCredentials(t *testing.T) (*FCMCredentials, *ecdh.PrivateKey) {
+func testPushCredentials(t testing.TB) (*FCMCredentials, *ecdh.PrivateKey) {
 	t.Helper()
 
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -77,7 +77,7 @@ type testPush struct {
 	secrets [][]byte
 }
 
-func expandHKDF(t *testing.T, prk, info []byte, length int) []byte {
+func expandHKDF(t testing.TB, prk, info []byte, length int) []byte {
 	t.Helper()
 	out := make([]byte, length)
 	if _, err := io.ReadFull(hkdf.Expand(sha256.New, prk, info), out); err != nil {
@@ -88,7 +88,7 @@ func expandHKDF(t *testing.T, prk, info []byte, length int) []byte {
 
 // encryptTestPush builds an FCM Web Push (ECE aesgcm) message the way the
 // server would, mirroring encryptWebPushECE's derivation.
-func encryptTestPush(t *testing.T, creds *FCMCredentials, clientPriv *ecdh.PrivateKey, plaintext []byte) testPush {
+func encryptTestPush(t testing.TB, creds *FCMCredentials, clientPriv *ecdh.PrivateKey, plaintext []byte) testPush {
 	t.Helper()
 
 	serverPriv, err := ecdh.P256().GenerateKey(rand.Reader)
@@ -166,9 +166,13 @@ func TestDecryptWebPushECE(t *testing.T) {
 	want := []byte(`{"location":"48.1,11.5"}`)
 	push := encryptTestPush(t, creds, clientPriv, want)
 
-	got, err := decryptWebPushECE(creds, push.msg)
+	pc, err := newPushCrypto(creds)
 	if err != nil {
-		t.Fatalf("decryptWebPushECE: %v", err)
+		t.Fatalf("newPushCrypto: %v", err)
+	}
+	got, err := pc.decrypt(push.msg)
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("decrypted = %q, want %q", got, want)
@@ -188,9 +192,13 @@ func TestDecryptWebPushECEAcceptsUnpaddedBase64(t *testing.T) {
 	creds.Keys.Private = strings.TrimRight(creds.Keys.Private, "=")
 	creds.Keys.Secret = strings.TrimRight(creds.Keys.Secret, "=")
 
-	got, err := decryptWebPushECE(creds, push.msg)
+	pc, err := newPushCrypto(creds)
 	if err != nil {
-		t.Fatalf("decryptWebPushECE: %v", err)
+		t.Fatalf("newPushCrypto: %v", err)
+	}
+	got, err := pc.decrypt(push.msg)
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("decrypted = %q, want %q", got, want)
@@ -206,8 +214,12 @@ func TestDecryptWebPushECEDoesNotLogSecrets(t *testing.T) {
 	restore := captureLogs(&buf)
 	defer restore()
 
-	if _, err := decryptWebPushECE(creds, push.msg); err != nil {
-		t.Fatalf("decryptWebPushECE: %v", err)
+	pc, err := newPushCrypto(creds)
+	if err != nil {
+		t.Fatalf("newPushCrypto: %v", err)
+	}
+	if _, err := pc.decrypt(push.msg); err != nil {
+		t.Fatalf("decrypt: %v", err)
 	}
 
 	out := buf.String()
@@ -240,9 +252,10 @@ func TestHandleDataMessageDoesNotLogAppData(t *testing.T) {
 	defer restore()
 
 	var got []byte
-	gotID := handleDataMessage(creds, push.msg, func(payload []byte, persistentID string) {
+	client := NewMCSClient(creds, func(payload []byte, persistentID string) {
 		got = payload
 	})
+	gotID := client.handleDataMessage(push.msg)
 
 	if !bytes.Equal(got, want) {
 		t.Fatalf("handler payload = %q, want %q", got, want)
@@ -321,8 +334,8 @@ func TestSendSelectiveAck(t *testing.T) {
 	if _, err := io.ReadFull(server, tag[:]); err != nil {
 		t.Fatalf("read tag: %v", err)
 	}
-	if tag[0] != byte(tags["*fcm.IqStanza"]) {
-		t.Fatalf("tag = %d, want %d", tag[0], tags["*fcm.IqStanza"])
+	if tag[0] != byte(tagByName["mcs_proto.IqStanza"]) {
+		t.Fatalf("tag = %d, want %d", tag[0], tagByName["mcs_proto.IqStanza"])
 	}
 	size, err := decodeVarint32(server)
 	if err != nil {
@@ -393,7 +406,7 @@ func TestListenAcksDataMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal data message: %v", err)
 	}
-	frame := append([]byte{byte(tags["*fcm.DataMessageStanza"])}, encodeVarint32(uint32(len(payload)))...)
+	frame := append([]byte{byte(tagByName["mcs_proto.DataMessageStanza"])}, encodeVarint32(uint32(len(payload)))...)
 	frame = append(frame, payload...)
 	if _, err := server.Write(frame); err != nil {
 		t.Fatalf("write data message: %v", err)
@@ -405,8 +418,8 @@ func TestListenAcksDataMessages(t *testing.T) {
 	if _, err := io.ReadFull(server, tag[:]); err != nil {
 		t.Fatalf("read ack tag: %v", err)
 	}
-	if tag[0] != byte(tags["*fcm.IqStanza"]) {
-		t.Fatalf("ack tag = %d, want %d", tag[0], tags["*fcm.IqStanza"])
+	if tag[0] != byte(tagByName["mcs_proto.IqStanza"]) {
+		t.Fatalf("ack tag = %d, want %d", tag[0], tagByName["mcs_proto.IqStanza"])
 	}
 	size, err := decodeVarint32(server)
 	if err != nil {
@@ -463,5 +476,22 @@ func TestListenCloseConcurrent(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Listen did not return after Close")
+	}
+}
+
+func BenchmarkPushDecrypt(b *testing.B) {
+	creds, clientPriv := testPushCredentials(b)
+	push := encryptTestPush(b, creds, clientPriv, []byte(`{"location":"48.1,11.5"}`))
+	pc, err := newPushCrypto(creds)
+	if err != nil {
+		b.Fatalf("newPushCrypto: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := pc.decrypt(push.msg); err != nil {
+			b.Fatalf("decrypt: %v", err)
+		}
 	}
 }
