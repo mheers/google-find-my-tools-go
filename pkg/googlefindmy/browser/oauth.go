@@ -336,11 +336,23 @@ func RequestSharedKey(ctx context.Context, cfg chrome.Config) (string, error) {
 	return hex.EncodeToString(sharedKey), nil
 }
 
-// extractSharedKey parses the vault keys JSON response and extracts the
-// finder_hw shared key. Mirrors Python response_parser.py:get_fmdn_shared_key.
+// extractSharedKey parses the vault keys payload and extracts the finder_hw
+// shared key. The page hands the payload over as a JSON-encoded string
+// (upstream response_parser.py runs json.loads on it), so unwrap one string
+// level before decoding the object. Mirrors Python
+// response_parser.py:get_fmdn_shared_key.
 func extractSharedKey(vaultKeysStr string) ([]byte, error) {
+	payload := []byte(vaultKeysStr)
+	if len(payload) > 0 && payload[0] == '"' {
+		var inner string
+		if err := json.Unmarshal(payload, &inner); err != nil {
+			return nil, fmt.Errorf("unquote vault keys: %w", err)
+		}
+		payload = []byte(inner)
+	}
+
 	var vaultKeys map[string][]map[string]interface{}
-	if err := json.Unmarshal([]byte(vaultKeysStr), &vaultKeys); err != nil {
+	if err := json.Unmarshal(payload, &vaultKeys); err != nil {
 		return nil, fmt.Errorf("parse vault keys: %w", err)
 	}
 
@@ -349,7 +361,18 @@ func extractSharedKey(vaultKeysStr string) ([]byte, error) {
 		return nil, errors.New("no finder_hw key in vault keys")
 	}
 
-	keyMap, ok := entries[0]["key"].(map[string]interface{})
+	// The vault can hold several key generations ("epochs") after a key
+	// rotation; always take the newest instead of whichever entry is first.
+	entry := entries[0]
+	bestEpoch := math.Inf(-1)
+	for _, candidate := range entries {
+		if epoch, ok := candidate["epoch"].(float64); ok && epoch > bestEpoch {
+			bestEpoch = epoch
+			entry = candidate
+		}
+	}
+
+	keyMap, ok := entry["key"].(map[string]interface{})
 	if !ok {
 		return nil, errors.New("no key data in finder_hw entry")
 	}

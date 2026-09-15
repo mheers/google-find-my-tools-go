@@ -4,6 +4,7 @@
 package browser
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -56,6 +57,50 @@ func TestExtractSharedKey(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("key byte %d = %d, want %d", i, got[i], want[i])
 		}
+	}
+}
+
+// TestExtractSharedKeyJSONString covers the payload shape the page actually
+// sends: the vault keys as a JSON-encoded string (the poll JSON.stringify()s
+// it once more, so the parser sees a quoted string).
+func TestExtractSharedKeyJSONString(t *testing.T) {
+	input, want := validVaultKeysJSON()
+	quoted, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := extractSharedKey(string(quoted))
+	if err != nil {
+		t.Fatalf("extractSharedKey(quoted): %v", err)
+	}
+	if string(got) != string(want[:]) {
+		t.Fatalf("key = %x, want %x", got, want)
+	}
+}
+
+// TestExtractSharedKeyNewestEpoch checks that a rotated vault prefers the
+// newest key generation instead of the first array entry.
+func TestExtractSharedKeyNewestEpoch(t *testing.T) {
+	entry := func(epoch, value int) string {
+		var b strings.Builder
+		fmt.Fprintf(&b, `{"epoch":%d,"key":{`, epoch)
+		for i := 0; i < 32; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `"%d":%d`, i, value)
+		}
+		b.WriteString(`}}`)
+		return b.String()
+	}
+	input := fmt.Sprintf(`{"finder_hw":[%s,%s]}`, entry(1, 1), entry(2, 2))
+
+	got, err := extractSharedKey(input)
+	if err != nil {
+		t.Fatalf("extractSharedKey: %v", err)
+	}
+	if got[0] != 2 {
+		t.Fatalf("picked epoch 1 (key byte %d), want the newest epoch (2)", got[0])
 	}
 }
 
