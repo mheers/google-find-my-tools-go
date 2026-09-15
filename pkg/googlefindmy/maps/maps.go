@@ -49,6 +49,9 @@ type Contact struct {
 // cfg controls the Chrome launch; pass a persistent UserDataDir so later runs
 // reuse an existing sign-in instead of signing in again.
 func AuthenticateMaps(ctx context.Context, store *auth.Store, cfg chrome.Config) (int, error) {
+	if err := chrome.CheckProfileFree(cfg.UserDataDir); err != nil {
+		return 0, err
+	}
 	slog.Info("starting Maps authentication — opening Chrome...")
 
 	allocCtx, cancel := chromedp.NewExecAllocator(ctx, cfg.AllocatorOptions()...)

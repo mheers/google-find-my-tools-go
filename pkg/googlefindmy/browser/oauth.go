@@ -60,6 +60,9 @@ func deadlineFromContext(ctx context.Context, fallback time.Duration) time.Time 
 // cfg controls the Chrome launch; pass a persistent UserDataDir so later runs
 // reuse an existing sign-in instead of signing in again.
 func RunOAuthFlow(ctx context.Context, cfg chrome.Config, email string) (*OAuthResult, error) {
+	if err := chrome.CheckProfileFree(cfg.UserDataDir); err != nil {
+		return nil, err
+	}
 	oauthURL := buildOAuthURL(email)
 
 	allocCtx, cancel := chromedp.NewExecAllocator(ctx, cfg.AllocatorOptions()...)
@@ -216,6 +219,9 @@ const wrapVaultKeysJS = `
 // cfg controls the Chrome launch; pass a persistent UserDataDir so later runs
 // reuse an existing sign-in instead of signing in again.
 func RequestSharedKey(ctx context.Context, cfg chrome.Config) (string, error) {
+	if err := chrome.CheckProfileFree(cfg.UserDataDir); err != nil {
+		return "", err
+	}
 	secURL, err := buildSecurityDomainURL()
 	if err != nil {
 		return "", fmt.Errorf("build security domain url: %w", err)
