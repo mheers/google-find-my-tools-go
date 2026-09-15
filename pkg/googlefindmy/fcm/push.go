@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"golang.org/x/crypto/hkdf"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -198,9 +198,11 @@ func (c *MCSClient) Connect(ctx context.Context) error {
 		_ = c.Close()
 		return fmt.Errorf("mcs: expected LoginResponse, got %T", resp)
 	}
-	log.Printf("[MCS] logged in (android-id=%x, server-timestamp=%d, stream-id=%d, settings=%d)",
-		uint64(androidID), loginResp.GetServerTimestamp(),
-		loginResp.GetStreamId(), len(loginResp.GetSetting()))
+	slog.Info("mcs logged in",
+		"android_id", fmt.Sprintf("%x", uint64(androidID)),
+		"server_timestamp", loginResp.GetServerTimestamp(),
+		"stream_id", loginResp.GetStreamId(),
+		"settings", len(loginResp.GetSetting()))
 	return nil
 }
 
@@ -256,16 +258,16 @@ func (c *MCSClient) Listen() error {
 
 		switch m := msg.(type) {
 		case *fcmpb.HeartbeatPing:
-			log.Printf("[MCS] heartbeat ping")
+			slog.Debug("mcs heartbeat ping")
 			if err := c.sendMsg(&fcmpb.HeartbeatAck{}); err != nil {
 				return fmt.Errorf("mcs send heartbeat ack: %w", err)
 			}
 		case *fcmpb.HeartbeatAck:
-			log.Printf("[MCS] heartbeat ack")
+			slog.Debug("mcs heartbeat ack")
 		case *fcmpb.IqStanza:
-			log.Printf("[MCS] iq stanza")
+			slog.Debug("mcs iq stanza")
 		case *fcmpb.DataMessageStanza:
-			log.Printf("[MCS] data message stanza")
+			slog.Debug("mcs data message stanza")
 			persistentID := handleDataMessage(c.creds, m, c.handler)
 			if persistentID != "" {
 				c.rememberPersistentID(persistentID)
@@ -278,7 +280,7 @@ func (c *MCSClient) Listen() error {
 		case *fcmpb.StreamErrorStanza:
 			return errors.New("mcs stream error")
 		default:
-			log.Printf("[MCS] unhandled message type: %T", msg)
+			slog.Debug("mcs unhandled message type", "type", fmt.Sprintf("%T", msg))
 		}
 	}
 }
@@ -292,9 +294,9 @@ func (c *MCSClient) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			log.Printf("[MCS] connect failed: %v", err)
+			slog.Warn("mcs connect failed", "err", err)
 		} else if err := c.Listen(); err != nil && ctx.Err() == nil {
-			log.Printf("[MCS] connection lost: %v", err)
+			slog.Warn("mcs connection lost", "err", err)
 		}
 
 		select {
@@ -493,17 +495,18 @@ func decodeVarint32(r io.Reader) (uint32, error) {
 // returns the message's persistent ID, which must be acknowledged even when
 // decryption or handling fails.
 func handleDataMessage(creds *FCMCredentials, msg *fcmpb.DataMessageStanza, handler PushHandler) string {
-	log.Printf("[MCS] handleDataMessage: app_data=%d, raw_data_len=%d",
-		len(msg.GetAppData()), len(msg.GetRawData()))
+	slog.Debug("mcs data message",
+		"app_data", len(msg.GetAppData()),
+		"raw_data_len", len(msg.GetRawData()))
 
 	persistentID := msg.GetPersistentId()
 	decrypted, err := decryptWebPushECE(creds, msg)
 	if err != nil {
-		log.Printf("[MCS] decrypt: %v", err)
+		slog.Debug("mcs decrypt failed", "err", err)
 		return persistentID
 	}
 
-	log.Printf("[MCS] decrypted %d bytes", len(decrypted))
+	slog.Debug("mcs decrypted message", "bytes", len(decrypted))
 	if persistentID != "" && handler != nil {
 		handler(decrypted, persistentID)
 	}
@@ -535,7 +538,7 @@ func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]b
 	// is visible, but still attempt decryption: the consumer filters messages
 	// by request UUID.
 	if subtype != "" && creds.GCM != nil && subtype != creds.GCM.AppID {
-		log.Printf("[MCS] data message subtype %q does not match app id %q", subtype, creds.GCM.AppID)
+		slog.Debug("mcs subtype mismatch", "subtype", subtype, "app_id", creds.GCM.AppID)
 	}
 
 	dhRaw, err := decodeBase64URL(dhB64)

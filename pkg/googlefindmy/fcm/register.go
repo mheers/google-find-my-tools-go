@@ -29,6 +29,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/internal/httpbody"
 	fcmpb "github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/proto/fcm"
 )
 
@@ -473,7 +474,7 @@ func gcmCheckinOnce(ctx context.Context, hc *http.Client, cfg Config, androidID,
 		return nil, fmt.Errorf("checkin read: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &httpStatusError{Op: "gcm checkin", Status: resp.StatusCode, Body: string(respBody)}
+		return nil, &httpStatusError{Op: "gcm checkin", Status: resp.StatusCode, Body: httpbody.Safe(respBody)}
 	}
 
 	out := &fcmpb.AndroidCheckinResponse{}
@@ -510,15 +511,15 @@ func gcmRegister(ctx context.Context, hc *http.Client, cfg Config, androidID, se
 		return nil, fmt.Errorf("gcm register read: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &httpStatusError{Op: "gcm register", Status: resp.StatusCode, Body: string(body)}
+		return nil, &httpStatusError{Op: "gcm register", Status: resp.StatusCode, Body: httpbody.Safe(body)}
 	}
 
 	if bytes.Contains(body, []byte("Error")) {
-		return nil, transient(fmt.Errorf("gcm register error: %s", string(body)))
+		return nil, transient(fmt.Errorf("gcm register error: %s", httpbody.Safe(body)))
 	}
 	parts := strings.SplitN(strings.TrimSpace(string(body)), "=", 2)
 	if len(parts) != 2 || parts[0] != "token" {
-		return nil, fmt.Errorf("gcm register unexpected response: %s", string(body))
+		return nil, fmt.Errorf("gcm register unexpected response: %s", httpbody.Safe(body))
 	}
 	token := parts[1]
 
@@ -608,7 +609,7 @@ func doFCMInstall(ctx context.Context, hc *http.Client, cfg Config, fid64, hbHea
 		return nil, fmt.Errorf("fcm install read: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &httpStatusError{Op: "fcm install", Status: resp.StatusCode, Body: string(body)}
+		return nil, &httpStatusError{Op: "fcm install", Status: resp.StatusCode, Body: httpbody.Safe(body)}
 	}
 
 	var result struct {
@@ -710,7 +711,7 @@ func doFCMRegister(ctx context.Context, hc *http.Client, cfg Config, gcm *GCMCre
 		return nil, fmt.Errorf("fcm register read: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &httpStatusError{Op: "fcm register", Status: resp.StatusCode, Body: string(body)}
+		return nil, &httpStatusError{Op: "fcm register", Status: resp.StatusCode, Body: httpbody.Safe(body)}
 	}
 
 	var result struct {

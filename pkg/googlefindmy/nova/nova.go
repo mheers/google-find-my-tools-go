@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/internal/httpbody"
 	findhub "github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/proto/findhub"
 )
 
@@ -83,7 +84,7 @@ func (c *Client) request(ctx context.Context, scope string, payload []byte) ([]b
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("nova %s: status %d: %s", scope, resp.StatusCode, string(body))
+		return nil, fmt.Errorf("nova %s: status %d: %s", scope, resp.StatusCode, httpbody.Safe(body))
 	}
 	return body, nil
 }

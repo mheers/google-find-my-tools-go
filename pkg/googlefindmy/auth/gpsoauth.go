@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/internal/httpbody"
 )
 
 // AuthURL is the Google OAuth token exchange endpoint. It is a package-level
@@ -69,7 +70,7 @@ func exchangeOAuthToken(ctx context.Context, client *http.Client, endpoint, emai
 
 	aasToken = vals.Get("Token")
 	if aasToken == "" {
-		return "", "", fmt.Errorf("aas_token (Token) not found in response: %s", string(body))
+		return "", "", fmt.Errorf("aas_token (Token) not found in response: %s", httpbody.Safe(body))
 	}
 	emailOut = vals.Get("Email")
 	return aasToken, emailOut, nil
@@ -123,7 +124,7 @@ func requestScopeToken(ctx context.Context, client *http.Client, endpoint, email
 
 	token := vals.Get("Auth")
 	if token == "" {
-		return "", fmt.Errorf("scope token (Auth) not found in response: %s", string(body))
+		return "", fmt.Errorf("scope token (Auth) not found in response: %s", httpbody.Safe(body))
 	}
 	return token, nil
 }
@@ -148,7 +149,7 @@ func postAuthForm(ctx context.Context, client *http.Client, endpoint string, dat
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("auth returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("auth returned status %d: %s", resp.StatusCode, httpbody.Safe(body))
 	}
 	return body, nil
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/grpc"
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/internal/httpbody"
 	findhub "github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/proto/findhub"
 )
 
@@ -82,7 +83,7 @@ func (c *Client) request(ctx context.Context, scope string, req proto.Message) (
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("spot %s: status %d: %s", scope, resp.StatusCode, string(framed))
+		return nil, fmt.Errorf("spot %s: status %d: %s", scope, resp.StatusCode, httpbody.Safe(framed))
 	}
 
 	payload, err := grpc.Unwrap(framed)

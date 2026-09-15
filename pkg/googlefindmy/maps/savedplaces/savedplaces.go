@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/internal/httpbody"
 )
 
 // Place is a saved place entry from a Google Maps list.
@@ -156,7 +157,7 @@ func (c *Client) FetchLists(ctx context.Context, specs []ListSpec) ([]List, erro
 			slog.Warn("HTTP fetch failed", "id", spec.ID, "err", err)
 			continue
 		}
-		slog.Info("HTTP fetch", "name", list.Name, "places", len(list.Places))
+		slog.Debug("saved list fetched", "name", list.Name, "places", len(list.Places))
 		lists = append(lists, list)
 	}
 	return lists, nil
@@ -204,11 +205,9 @@ func (c *Client) fetchListViaHTTP(ctx context.Context, listID string) ([]Place, 
 		}
 	}
 
-	slog.Info("entitylist response", "size", len(text), "prefix", text[:min(200, len(text))])
-
 	var data []any
 	if err := json.Unmarshal([]byte(text), &data); err != nil {
-		return nil, "", fmt.Errorf("parse JSON: %w (text: %s)", err, text[:min(200, len(text))])
+		return nil, "", fmt.Errorf("parse JSON: %w (body: %s)", err, httpbody.Safe([]byte(text)))
 	}
 
 	places, listName := parseEntityList(data)
@@ -229,7 +228,7 @@ func parseEntityList(data []any) ([]Place, string) {
 		}
 	}
 
-	slog.Info("parsing entity list", "entries", len(data), "listName", listName)
+	slog.Debug("parsing entity list", "entries", len(data), "list_name", listName)
 
 	var places []Place
 	seen := map[string]bool{}
