@@ -22,12 +22,19 @@ func Wrap(payload []byte) []byte {
 	return out
 }
 
+// maxFrameSize bounds a single gRPC message so a malicious or buggy peer
+// cannot force an unbounded allocation.
+const maxFrameSize = 16 << 20 // 16 MiB
+
 // Unwrap extracts the inner payload from a gRPC-framed message.
 func Unwrap(framed []byte) ([]byte, error) {
 	if len(framed) < 5 {
 		return nil, fmt.Errorf("grpc: frame too short (%d bytes)", len(framed))
 	}
 	length := binary.BigEndian.Uint32(framed[1:5])
+	if length > maxFrameSize {
+		return nil, fmt.Errorf("grpc: frame length %d exceeds limit %d", length, maxFrameSize)
+	}
 	if uint32(len(framed)-5) < length {
 		return nil, fmt.Errorf("grpc: frame length %d exceeds available %d", length, len(framed)-5)
 	}
@@ -41,6 +48,9 @@ func ReadFrame(r io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("grpc: read header: %w", err)
 	}
 	length := binary.BigEndian.Uint32(header[1:5])
+	if length > maxFrameSize {
+		return nil, fmt.Errorf("grpc: frame length %d exceeds limit %d", length, maxFrameSize)
+	}
 	body := make([]byte, length)
 	if _, err := io.ReadFull(r, body); err != nil {
 		return nil, fmt.Errorf("grpc: read body: %w", err)

@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"golang.org/x/crypto/hkdf"
 	"io"
@@ -275,6 +276,9 @@ func (c *MCSClient) readMsg() (proto.Message, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mcs read size: %w", err)
 	}
+	if size > maxMCSMessageSize {
+		return nil, fmt.Errorf("mcs: message size %d exceeds limit %d", size, maxMCSMessageSize)
+	}
 
 	payload := make([]byte, size)
 	if _, err := io.ReadFull(c.conn, payload); err != nil {
@@ -319,6 +323,10 @@ func encodeVarint32(x uint32) []byte {
 	return buf.Bytes()
 }
 
+// maxMCSMessageSize bounds the payload size accepted from the MCS stream to
+// avoid unbounded allocations from a misbehaving or hostile server.
+const maxMCSMessageSize = 16 << 20 // 16 MiB
+
 func decodeVarint32(r io.Reader) (uint32, error) {
 	var result uint32
 	var shift uint
@@ -326,6 +334,9 @@ func decodeVarint32(r io.Reader) (uint32, error) {
 	for {
 		if _, err := io.ReadFull(r, b); err != nil {
 			return 0, err
+		}
+		if shift >= 32 {
+			return 0, errors.New("mcs: varint32 overflow")
 		}
 		result |= uint32(b[0]&0x7F) << shift
 		if b[0]&0x80 == 0 {

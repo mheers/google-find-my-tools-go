@@ -117,6 +117,11 @@ func decryptWithDerivedKey(encryptedData, privateKey, info, aad []byte, deriveWi
 	if deriveWithPublicKey {
 		ciphertextOffset = 65
 	}
+	// Guard against truncated input before slicing: version + optional public
+	// key + at least an AES-GCM IV.
+	if len(encryptedData) < secureboxVersionLength+ciphertextOffset+12 {
+		return nil, errors.New("crypto: encrypted data too short")
+	}
 	ciphertextAndIV := encryptedData[secureboxVersionLength+ciphertextOffset:]
 
 	salt := append(append([]byte{}, securebox...), secureboxVersion...)

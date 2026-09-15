@@ -143,3 +143,65 @@ func TestForeignTrackerVector(t *testing.T) {
 		}
 	}
 }
+
+func TestDecryptRejectsMalformedInput(t *testing.T) {
+	key := make([]byte, 32)
+	encrypted := append([]byte{0x02, 0x00}, make([]byte, 64)...)
+
+	if _, err := DecryptSharedKey(key, encrypted); err == nil {
+		t.Error("DecryptSharedKey: expected error for truncated input")
+	}
+	if _, err := DecryptApplicationKey(key, encrypted); err == nil {
+		t.Error("DecryptApplicationKey: expected error for truncated input")
+	}
+	if _, err := DecryptSecurityDomainKey(key, []byte{0x02, 0x00}); err == nil {
+		t.Error("DecryptSecurityDomainKey: expected error for truncated input")
+	}
+	if _, err := DecryptOwnerKey(key, nil); err == nil {
+		t.Error("DecryptOwnerKey: expected error for empty input")
+	}
+}
+
+func TestEIDRejectsInvalidIdentityKey(t *testing.T) {
+	if _, err := GenerateEID([]byte("too-short"), 1_700_000_000); err == nil {
+		t.Fatal("GenerateEID: expected error for a non-32-byte identity key")
+	}
+}
+
+func TestEncryptForeignTrackerRejectsZeroScalar(t *testing.T) {
+	eid := mustHex("9d8188455646a1b02ef769bf9845f095c1e79499")
+	if _, _, err := EncryptForeignTracker([]byte("msg"), make([]byte, 32), eid); err == nil {
+		t.Fatal("EncryptForeignTracker: expected error for an all-zero scalar")
+	}
+	if _, _, err := EncryptForeignTracker([]byte("msg"), nil, eid); err == nil {
+		t.Fatal("EncryptForeignTracker: expected error for an empty scalar")
+	}
+}
+
+func TestDecryptForeignTrackerRejectsMalformedInput(t *testing.T) {
+	validKey := make([]byte, 32)
+	shortCt := []byte{0x01, 0x02, 0x03}
+	eid := mustHex("9d8188455646a1b02ef769bf9845f095c1e79499")
+
+	if _, err := DecryptForeignTracker(validKey, shortCt, eid, 0); err == nil {
+		t.Fatal("expected error for ciphertext shorter than the tag")
+	}
+	if _, err := DecryptForeignTracker([]byte("bad-key"), append(shortCt, make([]byte, 32)...), eid, 0); err == nil {
+		t.Fatal("expected error for an invalid identity key")
+	}
+}
+
+func FuzzDecryptSharedKey(f *testing.F) {
+	f.Add(make([]byte, 32), append([]byte{0x02, 0x00}, make([]byte, 80)...))
+	f.Fuzz(func(t *testing.T, key, encrypted []byte) {
+		// Must never panic, regardless of input shape.
+		_, _ = DecryptSharedKey(key, encrypted)
+	})
+}
+
+func FuzzDecryptForeignTracker(f *testing.F) {
+	f.Add(make([]byte, 32), make([]byte, 48), make([]byte, 20), int64(0))
+	f.Fuzz(func(t *testing.T, identityKey, encryptedAndTag, sx []byte, timestamp int64) {
+		_, _ = DecryptForeignTracker(identityKey, encryptedAndTag, sx, timestamp)
+	})
+}

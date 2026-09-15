@@ -34,10 +34,19 @@ func hkdfSHA256(secret, info []byte, length int) []byte {
 // Identifier advertised by the tracker. It returns (ciphertext||tag, Sx) where
 // Sx is the x-coordinate of the ephemeral public key (20 bytes).
 func EncryptForeignTracker(message, random, eid []byte) ([]byte, []byte, error) {
+	if len(random) == 0 {
+		return nil, nil, errors.New("crypto: random scalar must not be empty")
+	}
 	s := new(big.Int).SetBytes(random)
 	s.Mod(s, secp160r1Order)
+	if s.Sign() == 0 {
+		return nil, nil, errors.New("crypto: random scalar reduces to zero")
+	}
 
 	sx, _ := scalarBaseMult(s.Bytes())
+	if sx == nil {
+		return nil, nil, errors.New("crypto: ephemeral public key is the point at infinity")
+	}
 
 	rx := new(big.Int).SetBytes(eid)
 	rX, rY := PointFromX(eid)
@@ -47,6 +56,9 @@ func EncryptForeignTracker(message, random, eid []byte) ([]byte, []byte, error) 
 
 	// k = HKDF-SHA256( (s*R).x )
 	sharedX, _ := pointMul(s, rX, rY)
+	if sharedX == nil {
+		return nil, nil, errors.New("crypto: shared point is the point at infinity")
+	}
 	sharedBytes := make([]byte, 20)
 	sharedX.FillBytes(sharedBytes)
 	k := hkdfSHA256(sharedBytes, nil, 32)
@@ -82,8 +94,17 @@ func DecryptForeignTracker(identityKey, encryptedAndTag, sx []byte, beaconTimeCo
 	}
 
 	// Reconstruct r from the identity key and timestamp.
-	r := calculateR(identityKey, beaconTimeCounter)
+	r, err := calculateR(identityKey, beaconTimeCounter)
+	if err != nil {
+		return nil, err
+	}
+	if r.Sign() == 0 {
+		return nil, errors.New("crypto: derived scalar is zero")
+	}
 	rx2, _ := pointMulScalarBase(r)
+	if rx2 == nil {
+		return nil, errors.New("crypto: r*G is the point at infinity")
+	}
 
 	// Reconstruct S from its x-coordinate (even-y convention, matching Python).
 	sX, sY := PointFromX(sx)
@@ -93,6 +114,9 @@ func DecryptForeignTracker(identityKey, encryptedAndTag, sx []byte, beaconTimeCo
 
 	// k = HKDF-SHA256( (r*S).x )
 	sharedX, _ := pointMul(r, sX, sY)
+	if sharedX == nil {
+		return nil, errors.New("crypto: shared point is the point at infinity")
+	}
 	sharedBytes := make([]byte, 20)
 	sharedX.FillBytes(sharedBytes)
 	k := hkdfSHA256(sharedBytes, nil, 32)

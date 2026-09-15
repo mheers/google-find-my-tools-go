@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"io"
 	"log"
+	"net"
 	"strings"
 	"testing"
 
@@ -227,5 +228,42 @@ func TestHandleDataMessageDoesNotLogAppData(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "dh=") {
 		t.Errorf("log output contains app_data values: %q", buf.String())
+	}
+}
+
+func TestDecodeVarint32RoundTrip(t *testing.T) {
+	values := []uint32{0, 1, 127, 128, 16383, 16384, 1 << 21, ^uint32(0)}
+	for _, want := range values {
+		got, err := decodeVarint32(bytes.NewReader(encodeVarint32(want)))
+		if err != nil {
+			t.Fatalf("decodeVarint32(%d): %v", want, err)
+		}
+		if got != want {
+			t.Fatalf("decodeVarint32 round trip = %d, want %d", got, want)
+		}
+	}
+}
+
+func TestDecodeVarint32RejectsOverflow(t *testing.T) {
+	// Six continuation bytes; a uint32 varint never needs more than five.
+	overflow := []byte{0x80, 0x80, 0x80, 0x80, 0x80, 0x01}
+	if _, err := decodeVarint32(bytes.NewReader(overflow)); err == nil {
+		t.Fatal("expected an error for an overflowing varint")
+	}
+}
+
+func TestReadMsgRejectsOversizedPayload(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	c := &MCSClient{conn: client, firstMessage: false}
+	go func() {
+		frame := append([]byte{8}, encodeVarint32(maxMCSMessageSize+1)...)
+		_, _ = server.Write(frame)
+	}()
+
+	if _, err := c.readMsg(); err == nil {
+		t.Fatal("expected an error for a payload larger than the limit")
 	}
 }

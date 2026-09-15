@@ -1,6 +1,10 @@
 package crypto
 
-import "math/big"
+import (
+	"errors"
+	"fmt"
+	"math/big"
+)
 
 // EID constants.
 const (
@@ -24,7 +28,12 @@ func getMaskedTimestamp(timestamp int64, k int) []byte {
 
 // calculateR derives the scalar r used in EID generation. It matches the
 // Python FMDNCrypto.eid_generator.calculate_r implementation exactly.
-func calculateR(identityKey []byte, timestamp int64) *big.Int {
+// It returns an error when identityKey is not a 32-byte AES-256 key.
+func calculateR(identityKey []byte, timestamp int64) (*big.Int, error) {
+	if len(identityKey) != 32 {
+		return nil, fmt.Errorf("crypto: identity key must be 32 bytes, got %d", len(identityKey))
+	}
+
 	tsBytes := getMaskedTimestamp(timestamp, EIDK)
 
 	data := make([]byte, 32)
@@ -39,21 +48,28 @@ func calculateR(identityKey []byte, timestamp int64) *big.Int {
 
 	rDash, err := aesECBEncrypt(identityKey, data)
 	if err != nil {
-		// identityKey is always 32 bytes for AES-256; impossible to fail here.
-		panic(err)
+		return nil, fmt.Errorf("crypto: eid: %w", err)
 	}
 	rDashInt := new(big.Int).SetBytes(rDash)
-	return new(big.Int).Mod(rDashInt, secp160r1Order)
+	return new(big.Int).Mod(rDashInt, secp160r1Order), nil
 }
 
 // GenerateEID computes the Ephemeral Identifier for the given identity key and
 // timestamp. It returns the x-coordinate of r*G as a 20-byte big-endian value.
+// identityKey must be 32 bytes.
 func GenerateEID(identityKey []byte, timestamp int64) ([]byte, error) {
-	r := calculateR(identityKey, timestamp)
-	x, _ := scalarBaseMult(r.Bytes())
-	out := make([]byte, 20)
-	if x != nil {
-		x.FillBytes(out)
+	r, err := calculateR(identityKey, timestamp)
+	if err != nil {
+		return nil, err
 	}
+	if r.Sign() == 0 {
+		return nil, errors.New("crypto: eid: derived scalar is zero")
+	}
+	x, _ := scalarBaseMult(r.Bytes())
+	if x == nil {
+		return nil, errors.New("crypto: eid: r*G is the point at infinity")
+	}
+	out := make([]byte, 20)
+	x.FillBytes(out)
 	return out, nil
 }
