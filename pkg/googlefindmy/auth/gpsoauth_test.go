@@ -20,11 +20,8 @@ func TestExchangeOAuthToken(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	orig := AuthURL
-	AuthURL = ts.URL
-	defer func() { AuthURL = orig }()
-
-	aas, email, err := ExchangeOAuthToken(context.Background(), "user@example.com", "oauthcookie", "1234567890abcdef")
+	client := Client{Endpoint: ts.URL, HTTPClient: ts.Client()}
+	aas, email, err := client.ExchangeOAuthToken(context.Background(), "user@example.com", "oauthcookie", "1234567890abcdef")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,11 +55,8 @@ func TestExchangeOAuthTokenMissingToken(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	orig := AuthURL
-	AuthURL = ts.URL
-	defer func() { AuthURL = orig }()
-
-	if _, _, err := ExchangeOAuthToken(context.Background(), "u", "tok", "aid"); err == nil {
+	client := Client{Endpoint: ts.URL, HTTPClient: ts.Client()}
+	if _, _, err := client.ExchangeOAuthToken(context.Background(), "u", "tok", "aid"); err == nil {
 		t.Fatal("expected error when Token missing from response")
 	}
 }
@@ -76,11 +70,8 @@ func TestRequestScopeToken(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	orig := AuthURL
-	AuthURL = ts.URL
-	defer func() { AuthURL = orig }()
-
-	tok, err := RequestScopeToken(context.Background(), "user@example.com", "aastok", "aid", "android_device_manager", false)
+	client := Client{Endpoint: ts.URL, HTTPClient: ts.Client()}
+	tok, err := client.RequestScopeToken(context.Background(), "user@example.com", "aastok", "aid", "android_device_manager", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +89,7 @@ func TestRequestScopeToken(t *testing.T) {
 	}
 
 	// playServices=true uses the gms app
-	_, _ = RequestScopeToken(context.Background(), "u", "a", "aid", "spot", true)
+	_, _ = client.RequestScopeToken(context.Background(), "u", "a", "aid", "spot", true)
 	if got.Get("app") != "com.google.android.gms" {
 		t.Errorf("posted app = %q, want com.google.android.gms (playServices=true)", got.Get("app"))
 	}

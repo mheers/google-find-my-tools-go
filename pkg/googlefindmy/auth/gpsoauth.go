@@ -26,6 +26,34 @@ var AuthURL = "https://android.clients.google.com/auth"
 // exchanging the oauth_token for an aas_token (mirrors gpsoauth's default).
 const ClientSig = "38918a453d07199354f8b19af05ec6562ced5788"
 
+// Client performs Google's OAuth token exchange against a single endpoint.
+// The zero value uses AuthURL and a default HTTP client.
+type Client struct {
+	// Endpoint overrides the auth endpoint; empty means AuthURL.
+	Endpoint string
+	// HTTPClient overrides the HTTP client; nil means the shared default.
+	HTTPClient *http.Client
+}
+
+// NewClient returns a Client using the package defaults.
+func NewClient() *Client {
+	return &Client{}
+}
+
+func (c *Client) endpoint() string {
+	if c == nil || c.Endpoint == "" {
+		return AuthURL
+	}
+	return c.Endpoint
+}
+
+func (c *Client) httpClient() *http.Client {
+	if c == nil {
+		return httpclient.Default()
+	}
+	return httpclient.OrDefault(c.HTTPClient)
+}
+
 // ExchangeOAuthToken exchanges an oauth_token (obtained from the Chrome OAuth
 // flow) for an aas_token plus the account email. It mirrors
 // gpsoauth.exchange_token(email, token, android_id, service="ac2dm").
@@ -33,8 +61,8 @@ const ClientSig = "38918a453d07199354f8b19af05ec6562ced5788"
 // The email and androidID are required inputs: the email is normally retrieved
 // earlier via the chrome username flow, and androidID comes from the FCM
 // receiver (see FcmReceiver). The response re-confirms the email.
-func ExchangeOAuthToken(ctx context.Context, email, oauthToken, androidID string) (aasToken, emailOut string, err error) {
-	return exchangeOAuthToken(ctx, httpclient.Default(), AuthURL, email, oauthToken, androidID)
+func (c *Client) ExchangeOAuthToken(ctx context.Context, email, oauthToken, androidID string) (aasToken, emailOut string, err error) {
+	return exchangeOAuthToken(ctx, c.httpClient(), c.endpoint(), email, oauthToken, androidID)
 }
 
 func exchangeOAuthToken(ctx context.Context, client *http.Client, endpoint, email, oauthToken, androidID string) (aasToken, emailOut string, err error) {
@@ -84,8 +112,20 @@ func exchangeOAuthToken(ctx context.Context, client *http.Client, endpoint, emai
 // is expanded to "oauth2:https://www.googleapis.com/auth/<scope>". When
 // playServices is true the app is com.google.android.gms, otherwise
 // com.google.android.apps.adm.
+func (c *Client) RequestScopeToken(ctx context.Context, email, aasToken, androidID, scope string, playServices bool) (string, error) {
+	return requestScopeToken(ctx, c.httpClient(), c.endpoint(), email, aasToken, androidID, scope, playServices)
+}
+
+// ExchangeOAuthToken is a convenience wrapper around
+// Client.ExchangeOAuthToken using the package default endpoint.
+func ExchangeOAuthToken(ctx context.Context, email, oauthToken, androidID string) (aasToken, emailOut string, err error) {
+	return NewClient().ExchangeOAuthToken(ctx, email, oauthToken, androidID)
+}
+
+// RequestScopeToken is a convenience wrapper around
+// Client.RequestScopeToken using the package default endpoint.
 func RequestScopeToken(ctx context.Context, email, aasToken, androidID, scope string, playServices bool) (string, error) {
-	return requestScopeToken(ctx, httpclient.Default(), AuthURL, email, aasToken, androidID, scope, playServices)
+	return NewClient().RequestScopeToken(ctx, email, aasToken, androidID, scope, playServices)
 }
 
 func requestScopeToken(ctx context.Context, client *http.Client, endpoint, email, aasToken, androidID, scope string, playServices bool) (string, error) {
