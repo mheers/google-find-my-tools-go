@@ -13,6 +13,15 @@ import (
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/auth"
 )
 
+func newTestStore(t *testing.T, path string) *auth.Store {
+	t.Helper()
+	store, err := auth.NewStore(path)
+	if err != nil {
+		t.Fatalf("auth.NewStore(%q): %v", path, err)
+	}
+	return store
+}
+
 func TestParseListSpecs(t *testing.T) {
 	input := `Favorites	https://www.google.com/maps/placelists/list/favorite_ID?hl=en
 https://www.google.com/maps/@0,0,5z/data=!4m2!10m1!1e1!11m2!2scustom_ID!3e2
@@ -328,7 +337,7 @@ func TestClientFetchListNameFallback(t *testing.T) {
 
 func TestLoadMapsCookiesRawJSON(t *testing.T) {
 	secretsPath := t.TempDir() + "/secrets.json"
-	store := auth.NewStore(secretsPath)
+	store := newTestStore(t, secretsPath)
 
 	cookies := map[string]string{"SID": "abc", "HSID": "def"}
 	raw, _ := json.Marshal(cookies)
@@ -345,7 +354,7 @@ func TestLoadMapsCookiesRawJSON(t *testing.T) {
 
 func TestLoadMapsCookiesLegacyFormat(t *testing.T) {
 	secretsPath := t.TempDir() + "/secrets.json"
-	store := auth.NewStore(secretsPath)
+	store := newTestStore(t, secretsPath)
 
 	cookies := map[string]string{"SID": "abc"}
 	rawCookies, _ := json.Marshal(cookies)
@@ -362,7 +371,7 @@ func TestLoadMapsCookiesLegacyFormat(t *testing.T) {
 }
 
 func TestLoadMapsCookiesMissing(t *testing.T) {
-	store := auth.NewStore(t.TempDir() + "/nonexistent.json")
+	store := newTestStore(t, t.TempDir()+"/nonexistent.json")
 	_, err := LoadMapsCookies(store)
 	if err == nil {
 		t.Fatal("expected error for missing file")
@@ -371,7 +380,7 @@ func TestLoadMapsCookiesMissing(t *testing.T) {
 
 func TestLoadMapsCookiesMissingField(t *testing.T) {
 	secretsPath := t.TempDir() + "/secrets.json"
-	store := auth.NewStore(secretsPath)
+	store := newTestStore(t, secretsPath)
 	store.Save(&auth.Secrets{OAuthToken: "token"})
 
 	_, err := LoadMapsCookies(store)
@@ -386,7 +395,7 @@ func TestLoadMapsCookiesMissingField(t *testing.T) {
 func TestLoadMapsCookiesMalformedJSON(t *testing.T) {
 	secretsPath := t.TempDir() + "/secrets.json"
 	os.WriteFile(secretsPath, []byte(`{"maps_cookies": "not-json"}`), 0644)
-	store := auth.NewStore(secretsPath)
+	store := newTestStore(t, secretsPath)
 
 	_, err := LoadMapsCookies(store)
 	if err == nil {

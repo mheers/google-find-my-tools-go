@@ -1,0 +1,13 @@
+# Secrets — Google credentials must never be committed.
+# The library writes session cookies, OAuth/AAS tokens, the FCM private key
+# and E2EE keys to a JSON file (commonly secrets.json).
+secrets.json
+**/secrets.json
+*.secrets.json
+.env
+
+# Go build and test artifacts
+/bin/
+*.test
+*.out
+coverage.*

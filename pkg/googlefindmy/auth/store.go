@@ -27,10 +27,14 @@ type Store struct {
 	mu   sync.RWMutex
 }
 
-// NewStore creates a Store for the given secrets.json path.
-func NewStore(path string) *Store {
-	os.MkdirAll(filepath.Dir(path), 0755)
-	return &Store{path: path}
+// NewStore creates a Store for the given secrets.json path. The parent
+// directory is created with 0700 permissions if needed; secrets files must
+// not be readable by other users.
+func NewStore(path string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create secrets dir: %w", err)
+	}
+	return &Store{path: path}, nil
 }
 
 // Load reads secrets.json. Returns nil, nil if file doesn't exist.
