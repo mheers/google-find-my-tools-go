@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/grpc"
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
 	findhub "github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/proto/findhub"
 )
 
@@ -39,7 +40,7 @@ type Client struct {
 
 // NewClient creates a Spot client. token supplies the Spot bearer token.
 func NewClient(token TokenSource) *Client {
-	return &Client{HTTPClient: http.DefaultClient, Token: token}
+	return &Client{HTTPClient: httpclient.Default(), Token: token}
 }
 
 // request marshals req, wraps it in gRPC framing, POSTs it, and returns the
@@ -69,10 +70,7 @@ func (c *Client) request(ctx context.Context, scope string, req proto.Message) (
 	httpReq.Header.Set("Grpc-Accept-Encoding", "gzip")
 	httpReq.Header.Set("User-Agent", userAgent)
 
-	hc := c.HTTPClient
-	if hc == nil {
-		hc = http.DefaultClient
-	}
+	hc := httpclient.OrDefault(c.HTTPClient)
 	resp, err := hc.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("spot request: %w", err)

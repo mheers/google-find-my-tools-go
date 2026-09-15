@@ -24,6 +24,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
 	fcmpb "github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/proto/fcm"
 )
 
@@ -209,9 +210,7 @@ func Register(ctx context.Context, hc *http.Client) (*FCMCredentials, error) {
 }
 
 func register(ctx context.Context, hc *http.Client, cfg Config) (*FCMCredentials, error) {
-	if hc == nil {
-		hc = http.DefaultClient
-	}
+	hc = httpclient.OrDefault(hc)
 
 	// 1. GCM check-in.
 	checkinResp, err := gcmCheckin(ctx, hc, cfg, 0, 0)
@@ -596,9 +595,7 @@ func fcmRegister(ctx context.Context, hc *http.Client, cfg Config, gcm *GCMCrede
 // android ID and security token. This is a lightweight alternative to full
 // Register() when only the android ID is needed for OAuth token exchange.
 func Checkin(ctx context.Context, hc *http.Client) (androidID, securityToken uint64, err error) {
-	if hc == nil {
-		hc = http.DefaultClient
-	}
+	hc = httpclient.OrDefault(hc)
 	resp, err := gcmCheckin(ctx, hc, DefaultConfig(), 0, 0)
 	if err != nil {
 		return 0, 0, fmt.Errorf("gcm checkin: %w", err)

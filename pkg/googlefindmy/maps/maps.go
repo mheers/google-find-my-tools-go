@@ -16,6 +16,7 @@ import (
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/auth"
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
 )
 
 // Contact holds a parsed Maps Location Sharing contact or own-location entry.
@@ -161,7 +162,7 @@ type Client struct {
 
 // NewClient creates a new Maps client with the given cookies.
 func NewClient(cookies map[string]string) *Client {
-	return &Client{cookies: cookies, hc: http.DefaultClient}
+	return &Client{cookies: cookies, hc: httpclient.Default()}
 }
 
 const mapsAPIURL = "https://www.google.com/maps/rpc/locationsharing/read"

@@ -1,10 +1,13 @@
 package auth
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 )
 
 func TestExchangeOAuthToken(t *testing.T) {
@@ -21,7 +24,7 @@ func TestExchangeOAuthToken(t *testing.T) {
 	AuthURL = ts.URL
 	defer func() { AuthURL = orig }()
 
-	aas, email, err := ExchangeOAuthToken("user@example.com", "oauthcookie", "1234567890abcdef")
+	aas, email, err := ExchangeOAuthToken(context.Background(), "user@example.com", "oauthcookie", "1234567890abcdef")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +62,7 @@ func TestExchangeOAuthTokenMissingToken(t *testing.T) {
 	AuthURL = ts.URL
 	defer func() { AuthURL = orig }()
 
-	if _, _, err := ExchangeOAuthToken("u", "tok", "aid"); err == nil {
+	if _, _, err := ExchangeOAuthToken(context.Background(), "u", "tok", "aid"); err == nil {
 		t.Fatal("expected error when Token missing from response")
 	}
 }
@@ -77,7 +80,7 @@ func TestRequestScopeToken(t *testing.T) {
 	AuthURL = ts.URL
 	defer func() { AuthURL = orig }()
 
-	tok, err := RequestScopeToken("user@example.com", "aastok", "aid", "android_device_manager", false)
+	tok, err := RequestScopeToken(context.Background(), "user@example.com", "aastok", "aid", "android_device_manager", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -95,8 +98,34 @@ func TestRequestScopeToken(t *testing.T) {
 	}
 
 	// playServices=true uses the gms app
-	_, _ = RequestScopeToken("u", "a", "aid", "spot", true)
+	_, _ = RequestScopeToken(context.Background(), "u", "a", "aid", "spot", true)
 	if got.Get("app") != "com.google.android.gms" {
 		t.Errorf("posted app = %q, want com.google.android.gms (playServices=true)", got.Get("app"))
+	}
+}
+
+func TestExchangeOAuthTokenHonorsContext(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(500 * time.Millisecond):
+		}
+	}))
+	defer ts.Close()
+	t.Cleanup(ts.CloseClientConnections)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, _, err := exchangeOAuthToken(ctx, ts.Client(), ts.URL, "u", "t", "a")
+	if err == nil {
+		t.Fatal("expected an error for a cancelled context")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("request did not honor the context deadline (took %s)", elapsed)
 	}
 }

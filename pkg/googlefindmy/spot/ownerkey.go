@@ -43,7 +43,7 @@ func GetOwnerKey(ctx context.Context, authStore *auth.Store) ([]byte, error) {
 	}
 
 	// Get spot bearer token from the master aas_token.
-	spotToken, err := auth.RequestScopeToken(secrets.Username, secrets.AASToken, "0", "spot", true)
+	spotToken, err := auth.RequestScopeToken(ctx, secrets.Username, secrets.AASToken, "0", "spot", true)
 	if err != nil {
 		return nil, fmt.Errorf("get spot token: %w", err)
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
 	findhub "github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/proto/findhub"
 )
 
@@ -45,7 +46,7 @@ type Client struct {
 // NewClient creates a Nova client. token supplies the ADM bearer token.
 func NewClient(token TokenSource) *Client {
 	return &Client{
-		HTTPClient:    http.DefaultClient,
+		HTTPClient:    httpclient.Default(),
 		Token:         token,
 		fmdClientUUID: uuid.NewString(),
 	}
@@ -70,10 +71,7 @@ func (c *Client) request(ctx context.Context, scope string, payload []byte) ([]b
 	req.Header.Set("Accept-Language", "en-US")
 	req.Header.Set("User-Agent", userAgent)
 
-	hc := c.HTTPClient
-	if hc == nil {
-		hc = http.DefaultClient
-	}
+	hc := httpclient.OrDefault(c.HTTPClient)
 	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("nova request: %w", err)

@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
 )
 
 // Place is a saved place entry from a Google Maps list.
@@ -114,7 +116,7 @@ type Client struct {
 func NewClient(cookies map[string]string) *Client {
 	return &Client{
 		cookies: cookies,
-		hc:      http.DefaultClient,
+		hc:      httpclient.Default(),
 		apiURL:  "https://www.google.com/maps/preview/entitylist",
 	}
 }
