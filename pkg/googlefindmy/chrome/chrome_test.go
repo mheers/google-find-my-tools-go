@@ -40,6 +40,11 @@ func TestAllocatorFlags(t *testing.T) {
 	if got := flags["user-data-dir"]; got != "/tmp/findhub-profile" {
 		t.Errorf("user-data-dir = %v, want /tmp/findhub-profile", got)
 	}
+	for _, name := range []string{"password-store", "use-mock-keychain"} {
+		if got, ok := flags[name]; !ok || got != false {
+			t.Errorf("%s = %v, want false (keyring encryption must match the profile)", name, got)
+		}
+	}
 
 	if _, ok := (Config{}).initFlags()["user-data-dir"]; ok {
 		t.Error("user-data-dir must be omitted when UserDataDir is empty")

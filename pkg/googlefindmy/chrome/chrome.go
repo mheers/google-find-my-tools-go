@@ -52,6 +52,14 @@ func (c Config) initFlags() map[string]any {
 		// so turn the flag off and hide the corresponding Blink feature.
 		"enable-automation":      false,
 		"disable-blink-features": "AutomationControlled",
+		// chromedp forces --password-store=basic and --use-mock-keychain to
+		// avoid keyring prompts. Those change how Chrome encrypts cookies, so
+		// a profile signed in by a normal Chrome cannot be decrypted by the
+		// automation and the account appears signed out (and the cookies are
+		// dropped). Drop both flags so Chrome uses the system keyring, like
+		// the launch that primed the profile.
+		"password-store":    false,
+		"use-mock-keychain": false,
 	}
 	if c.noSandbox() {
 		flags["no-sandbox"] = true

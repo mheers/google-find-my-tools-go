@@ -108,7 +108,12 @@ google-chrome --user-data-dir=/path/to/chrome-profile
 
 Every later run reuses the session and never visits the sign-in page. Without a
 `UserDataDir`, each run gets a fresh temporary profile and must sign in again —
-which Google increasingly blocks. The `RunOAuthFlow` URL is
+which Google increasingly blocks. The launcher also keeps Chrome's normal
+password store: chromedp's `--password-store=basic` and `--use-mock-keychain`
+defaults change the cookie encryption key, which would make the primed
+profile's cookies unreadable and silently sign the account out.
+
+The `RunOAuthFlow` URL is
 `accounts.google.com/EmbeddedSetup`, the same entry point the Python
 implementation uses; it needs no OAuth client ID (the hardcoded client of the
 earlier Go port has been retired by Google).
