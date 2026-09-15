@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"net/http"
 
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/auth"
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/crypto"
@@ -53,7 +52,6 @@ func GetOwnerKey(ctx context.Context, authStore *auth.Store) ([]byte, error) {
 	spotClient := NewClient(func(ctx context.Context) (string, error) {
 		return spotToken, nil
 	})
-	spotClient.HTTPClient = http.DefaultClient
 
 	resp, err := spotClient.GetEidInfoForE2eeDevices(ctx)
 	if err != nil {

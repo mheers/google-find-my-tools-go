@@ -241,8 +241,6 @@ func extractSharedKey(vaultKeysStr string) ([]byte, error) {
 	}
 
 	// key is a JSON object with numeric string keys "0".."31" mapping to
-	// byte values. It can also be a JSON array.
-	// key is a JSON object with numeric string keys "0".."31" mapping to
 	// byte values (e.g., {"0": 0x12, "1": 0x34, ...}).
 	key := make([]byte, 0, 32)
 	for i := 0; i < 32; i++ {

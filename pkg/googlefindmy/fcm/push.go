@@ -7,7 +7,6 @@ import (
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/ecdsa"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -532,10 +531,12 @@ func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]b
 		return nil, fmt.Errorf("missing crypto-key or encryption")
 	}
 
-	// The subtype matches the FCM sender's AppID. If it doesn't match exactly
-	// (e.g. Python vs Go bundle IDs), we still attempt decryption — the
-	// request UUID filter in the handler will reject unrelated messages.
-	_ = subtype
+	// The subtype matches the FCM sender's AppID. Log a mismatch so misconfig
+	// is visible, but still attempt decryption: the consumer filters messages
+	// by request UUID.
+	if subtype != "" && creds.GCM != nil && subtype != creds.GCM.AppID {
+		log.Printf("[MCS] data message subtype %q does not match app id %q", subtype, creds.GCM.AppID)
+	}
 
 	dhRaw, err := base64.URLEncoding.DecodeString(dhB64)
 	if err != nil {
@@ -644,6 +645,3 @@ func trimPrefix(s, prefix string) string {
 	}
 	return s
 }
-
-// Ensure rand is used (for the import — GoFetcher will use it later).
-var _ = rand.Reader

@@ -3,7 +3,6 @@ package crypto
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"encoding/binary"
 	"errors"
 )
 
@@ -191,18 +190,6 @@ func equalBytes(a, b []byte) bool {
 	return v == 0
 }
 
-// aesECBEncrypt is a single-block AES-ECB encryption (no padding), used by EID
-// generation with a 32-byte key and 16-byte block input.
-func aesECBEncryptBlock(key, block16 []byte) ([]byte, error) {
-	c, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]byte, 16)
-	c.Encrypt(out, block16)
-	return out, nil
-}
-
 // aesECBEncrypt is a multi-block AES-ECB encryption (no padding). The input
 // length must be a multiple of the block size (16 bytes). Used by EID
 // generation which AES-ECB encrypts a 32-byte structure.
@@ -221,7 +208,8 @@ func aesECBEncrypt(key, data []byte) ([]byte, error) {
 	return out, nil
 }
 
-// gcmDecrypt performs AES-GCM decryption (standard, no associated data).
+// gcmDecrypt performs AES-GCM decryption (standard, no associated data). The
+// 12-byte IV is prepended to the ciphertext.
 func gcmDecrypt(key, ciphertextAndIV []byte) ([]byte, error) {
 	if len(ciphertextAndIV) < 12 {
 		return nil, errors.New("crypto: ciphertext too short for GCM")
@@ -237,21 +225,6 @@ func gcmDecrypt(key, ciphertextAndIV []byte) ([]byte, error) {
 		return nil, err
 	}
 	return gcm.Open(nil, iv, ct, nil)
-}
-
-// gcmEncrypt performs AES-GCM encryption (standard, no associated data).
-func gcmEncrypt(key, plaintext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	iv := make([]byte, 12)
-	// Zero IV is what the Python cloud_key_decryptor uses (IV is prepended).
-	return gcm.Seal(iv, iv, plaintext, nil), nil
 }
 
 // gcmDecryptAD performs AES-GCM decryption with associated data.
@@ -270,25 +243,4 @@ func gcmDecryptAD(key, ciphertextAndIV, associatedData []byte) ([]byte, error) {
 		return nil, err
 	}
 	return gcm.Open(nil, iv, ct, associatedData)
-}
-
-// gcmEncryptAD performs AES-GCM encryption with associated data.
-func gcmEncryptAD(key, plaintext, associatedData []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	iv := make([]byte, 12)
-	return gcm.Seal(iv, iv, plaintext, associatedData), nil
-}
-
-// u32be encodes a uint32 as big-endian (helper for some framing code).
-func u32be(v uint32) []byte {
-	b := make([]byte, 4)
-	binary.BigEndian.PutUint32(b, v)
-	return b
 }

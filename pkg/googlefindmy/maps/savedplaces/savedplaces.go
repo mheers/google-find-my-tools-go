@@ -237,7 +237,7 @@ func parseEntityList(data []any) ([]Place, string) {
 		if placeList, ok := data[8].([]any); ok {
 			for _, item := range placeList {
 				placeArr, _ := item.([]any)
-				if placeArr == nil || len(placeArr) < 3 {
+				if len(placeArr) < 3 {
 					continue
 				}
 

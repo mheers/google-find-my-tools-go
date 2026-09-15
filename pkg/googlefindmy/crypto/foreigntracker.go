@@ -1,9 +1,7 @@
 package crypto
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"math/big"
 
@@ -140,20 +138,4 @@ func pointMulScalarBase(k *big.Int) (x, y *big.Int) {
 func pointMul(k *big.Int, x, y *big.Int) (xr, yr *big.Int) {
 	px, py := secp160r1.ScalarMult(x, y, k.Bytes())
 	return px, py
-}
-
-// randomBytes returns n cryptographically random bytes.
-func randomBytes(n int) []byte {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
-	}
-	return b
-}
-
-// u64be / helpers used by proto framing elsewhere (kept here for reuse).
-func u64be(v uint64) []byte {
-	b := make([]byte, 8)
-	binary.BigEndian.PutUint64(b, v)
-	return b
 }

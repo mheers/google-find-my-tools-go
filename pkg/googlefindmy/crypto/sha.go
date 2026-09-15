@@ -15,8 +15,8 @@ func TruncatedSHA256(identityKey []byte, operation byte) []byte {
 	return h.Sum(nil)[:8]
 }
 
-// HMACSHA256 returns the hex-encoded HMAC-SHA256 of message under key, matching
-// the Python FMDNCrypto.sha.calculate_hmac_sha256 primitive.
+// HMACSHA256 returns the HMAC-SHA256 of message under key, matching the
+// Python FMDNCrypto.sha.calculate_hmac_sha256 primitive.
 func HMACSHA256(key, message []byte) []byte {
 	mac := hmac.New(func() hash.Hash { return sha256.New() }, key)
 	mac.Write(message)
