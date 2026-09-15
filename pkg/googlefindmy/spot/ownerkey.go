@@ -3,19 +3,40 @@ package spot
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/auth"
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/crypto"
+	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/fcm"
 )
+
+// androidIDFromSecrets extracts the decimal FCM android ID from the stored
+// credentials. Google binds scope tokens to the android ID used during FCM
+// registration, so the real value must be sent (not a placeholder).
+func androidIDFromSecrets(secrets *auth.Secrets) (string, error) {
+	if len(secrets.FCMCredentials) == 0 {
+		return "", errors.New("fcm credentials not found; register for FCM first")
+	}
+	var creds fcm.FCMCredentials
+	if err := json.Unmarshal(secrets.FCMCredentials, &creds); err != nil {
+		return "", fmt.Errorf("parse fcm credentials: %w", err)
+	}
+	if creds.GCM == nil || creds.GCM.AndroidID == 0 {
+		return "", errors.New("fcm credentials do not contain an android id; re-run the FCM registration")
+	}
+	return strconv.FormatUint(uint64(creds.GCM.AndroidID), 10), nil
+}
 
 // GetOwnerKey fetches, decrypts, and caches the owner key. It first checks
 // the auth store for a cached owner key. If missing, it calls the Spot API
 // to get the encrypted owner key, decrypts it with the shared key, and
 // caches the result.
 //
-// The spotClient must be configured with a token source that provides a
-// Spot bearer token (scope "spot", playServices=true).
+// The spot client uses a bearer token derived with the FCM android ID stored
+// in the credentials (scope "spot", playServices=true).
 func GetOwnerKey(ctx context.Context, authStore *auth.Store) ([]byte, error) {
 	secrets, err := authStore.Load()
 	if err != nil {
@@ -42,8 +63,14 @@ func GetOwnerKey(ctx context.Context, authStore *auth.Store) ([]byte, error) {
 		return nil, fmt.Errorf("decode shared key: %w", err)
 	}
 
+	// Scope tokens are bound to the android ID used for FCM registration.
+	androidID, err := androidIDFromSecrets(secrets)
+	if err != nil {
+		return nil, err
+	}
+
 	// Get spot bearer token from the master aas_token.
-	spotToken, err := auth.RequestScopeToken(ctx, secrets.Username, secrets.AASToken, "0", "spot", true)
+	spotToken, err := auth.RequestScopeToken(ctx, secrets.Username, secrets.AASToken, androidID, "spot", true)
 	if err != nil {
 		return nil, fmt.Errorf("get spot token: %w", err)
 	}
