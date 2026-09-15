@@ -72,7 +72,7 @@ func (s *Store) Save(secrets *Secrets) error {
 		return fmt.Errorf("write temp: %w", err)
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("rename: %w", err)
 	}
 	return nil

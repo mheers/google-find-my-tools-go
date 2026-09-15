@@ -261,7 +261,7 @@ func TestClientContextCancellation(t *testing.T) {
 
 func TestClientJSONHijackPrefix(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(")]}'\n[[]]"))
+		_, _ = w.Write([]byte(")]}'\n[[]]"))
 	}))
 	defer srv.Close()
 
@@ -286,7 +286,7 @@ func TestClientFetchListSuccess(t *testing.T) {
 	body, _ := json.Marshal(response)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
 
@@ -318,7 +318,7 @@ func TestClientFetchListNameFallback(t *testing.T) {
 	body, _ := json.Marshal(response)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
 
@@ -341,7 +341,9 @@ func TestLoadMapsCookiesRawJSON(t *testing.T) {
 
 	cookies := map[string]string{"SID": "abc", "HSID": "def"}
 	raw, _ := json.Marshal(cookies)
-	store.Save(&auth.Secrets{MapsCookies: raw})
+	if err := store.Save(&auth.Secrets{MapsCookies: raw}); err != nil {
+		t.Fatalf("save secrets: %v", err)
+	}
 
 	got, err := LoadMapsCookies(store)
 	if err != nil {
@@ -359,7 +361,9 @@ func TestLoadMapsCookiesLegacyFormat(t *testing.T) {
 	cookies := map[string]string{"SID": "abc"}
 	rawCookies, _ := json.Marshal(cookies)
 	wrapped, _ := json.Marshal(string(rawCookies))
-	store.Save(&auth.Secrets{MapsCookies: wrapped})
+	if err := store.Save(&auth.Secrets{MapsCookies: wrapped}); err != nil {
+		t.Fatalf("save secrets: %v", err)
+	}
 
 	got, err := LoadMapsCookies(store)
 	if err != nil {
@@ -381,7 +385,9 @@ func TestLoadMapsCookiesMissing(t *testing.T) {
 func TestLoadMapsCookiesMissingField(t *testing.T) {
 	secretsPath := t.TempDir() + "/secrets.json"
 	store := newTestStore(t, secretsPath)
-	store.Save(&auth.Secrets{OAuthToken: "token"})
+	if err := store.Save(&auth.Secrets{OAuthToken: "token"}); err != nil {
+		t.Fatalf("save secrets: %v", err)
+	}
 
 	_, err := LoadMapsCookies(store)
 	if err == nil {
@@ -394,7 +400,9 @@ func TestLoadMapsCookiesMissingField(t *testing.T) {
 
 func TestLoadMapsCookiesMalformedJSON(t *testing.T) {
 	secretsPath := t.TempDir() + "/secrets.json"
-	os.WriteFile(secretsPath, []byte(`{"maps_cookies": "not-json"}`), 0644)
+	if err := os.WriteFile(secretsPath, []byte(`{"maps_cookies": "not-json"}`), 0o600); err != nil {
+		t.Fatalf("write secrets: %v", err)
+	}
 	store := newTestStore(t, secretsPath)
 
 	_, err := LoadMapsCookies(store)

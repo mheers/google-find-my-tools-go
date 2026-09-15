@@ -77,7 +77,7 @@ func (c *Client) request(ctx context.Context, scope string, req proto.Message) (
 	if err != nil {
 		return nil, fmt.Errorf("spot request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	framed, err := io.ReadAll(resp.Body)
 	if err != nil {

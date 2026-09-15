@@ -47,7 +47,7 @@ func TestGetEidInfoForE2eeDevices(t *testing.T) {
 		}
 		b, _ := proto.Marshal(resp)
 		w.Header().Set("Content-Type", "application/grpc")
-		w.Write(grpc.Wrap(b))
+		_, _ = w.Write(grpc.Wrap(b))
 	}))
 	defer ts.Close()
 

@@ -54,7 +54,7 @@ func exchangeOAuthToken(client *http.Client, endpoint, email, oauthToken, androi
 	if err != nil {
 		return "", "", fmt.Errorf("post auth: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -117,7 +117,7 @@ func requestScopeToken(client *http.Client, endpoint, email, aasToken, androidID
 	if err != nil {
 		return "", fmt.Errorf("post auth: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

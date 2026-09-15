@@ -56,7 +56,7 @@ func TestListDevices(t *testing.T) {
 			},
 		}
 		b, _ := proto.Marshal(resp)
-		w.Write(b)
+		_, _ = w.Write(b)
 	})
 	defer closeFn()
 
@@ -92,7 +92,7 @@ func TestLocate(t *testing.T) {
 		if req.GetAction().GetLocateTracker().GetContributorType() != findhub.SpotContributorType_FMDN_ALL_LOCATIONS {
 			t.Errorf("contributor type = %v", req.GetAction().GetLocateTracker().GetContributorType())
 		}
-		w.Write([]byte{}) // actual location arrives via FCM
+		_, _ = w.Write([]byte{}) // actual location arrives via FCM
 	})
 	defer closeFn()
 

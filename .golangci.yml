@@ -1,0 +1,13 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - gocritic
+  settings:
+    gocritic:
+      disabled-checks:
+        # The decoding code reads better with explicit if/else chains.
+        - ifElseChain
+  exclusions:
+    generated: lax

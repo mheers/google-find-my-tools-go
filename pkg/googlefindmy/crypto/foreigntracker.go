@@ -66,7 +66,9 @@ func EncryptForeignTracker(message, random, eid []byte) ([]byte, []byte, error) 
 	rx.FillBytes(lrX)
 	lsX := make([]byte, 20)
 	sx.FillBytes(lsX)
-	nonce := append(lrX[12:], lsX[12:]...)
+	nonce := make([]byte, 0, 16)
+	nonce = append(nonce, lrX[12:]...)
+	nonce = append(nonce, lsX[12:]...)
 
 	ctTag, err := EncryptEAX(k, nonce, nil, message)
 	if err != nil {
@@ -124,7 +126,9 @@ func DecryptForeignTracker(identityKey, encryptedAndTag, sx []byte, beaconTimeCo
 	rx2.FillBytes(lrX)
 	lsX := make([]byte, 20)
 	sX.FillBytes(lsX)
-	nonce := append(lrX[12:], lsX[12:]...)
+	nonce := make([]byte, 0, 16)
+	nonce = append(nonce, lrX[12:]...)
+	nonce = append(nonce, lsX[12:]...)
 
 	return DecryptEAX(k, nonce, nil, encryptedAndTag)
 }

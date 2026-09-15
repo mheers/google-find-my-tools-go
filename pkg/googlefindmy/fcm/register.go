@@ -243,7 +243,7 @@ func gcmCheckin(ctx context.Context, hc *http.Client, androidID, securityToken u
 	if err != nil {
 		return nil, fmt.Errorf("checkin post: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -280,7 +280,7 @@ func gcmRegister(ctx context.Context, hc *http.Client, androidID, securityToken 
 	if err != nil {
 		return nil, fmt.Errorf("gcm register post: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -363,7 +363,7 @@ func fcmInstall(ctx context.Context, hc *http.Client) (map[string]interface{}, e
 	if err != nil {
 		return nil, fmt.Errorf("fcm install post: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -414,7 +414,7 @@ func fcmRegister(ctx context.Context, hc *http.Client, gcm *GCMCredentials, inst
 	if err != nil {
 		return nil, fmt.Errorf("fcm register post: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
