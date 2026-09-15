@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -124,11 +125,21 @@ func AuthenticateMaps(ctx context.Context, store *auth.Store) (int, error) {
 		return 0, fmt.Errorf("re-fetch cookies: %w", err)
 	}
 
+	// Keep Google cookies (plus essential names set by other Google hosts).
+	// When the same name appears on multiple domains, prefer the most
+	// specific google.com domain over regional domains; otherwise keep the
+	// last value, matching previous behavior.
 	mapsCookies := make(map[string]string)
+	cookieDomain := make(map[string]string)
 	for _, c := range allCookies {
-		if containsGoogleDomain(c.Domain) || isEssentialCookie(c.Name) {
-			mapsCookies[c.Name] = c.Value
+		if !containsGoogleDomain(c.Domain) && !isEssentialCookie(c.Name) {
+			continue
 		}
+		if prev, ok := cookieDomain[c.Name]; ok && !preferDomain(c.Domain, prev) {
+			continue
+		}
+		mapsCookies[c.Name] = c.Value
+		cookieDomain[c.Name] = c.Domain
 	}
 
 	if len(mapsCookies) == 0 {
@@ -151,8 +162,28 @@ func AuthenticateMaps(ctx context.Context, store *auth.Store) (int, error) {
 	return len(mapsCookies), nil
 }
 
+// isGoogleDomain reports whether domain is google.com or a subdomain of it.
+func isGoogleDomain(domain string) bool {
+	domain = strings.TrimPrefix(domain, ".")
+	return domain == "google.com" || strings.HasSuffix(domain, ".google.com")
+}
+
+// containsGoogleDomain reports whether the cookie domain is a google.com
+// subdomain (the form used by the browser cookies).
 func containsGoogleDomain(domain string) bool {
 	return len(domain) >= 11 && domain[len(domain)-11:] == ".google.com"
+}
+
+// preferDomain reports whether candidate should replace current for the same
+// cookie name. An exact google.com cookie beats regional domains; between two
+// equally specific domains the later value wins (previous behavior).
+func preferDomain(candidate, current string) bool {
+	cand := strings.TrimPrefix(candidate, ".")
+	cur := strings.TrimPrefix(current, ".")
+	if cur == "google.com" && cand != "google.com" {
+		return false
+	}
+	return true
 }
 
 func isEssentialCookie(name string) bool {

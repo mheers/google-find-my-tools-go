@@ -270,3 +270,39 @@ func TestAuthUserOrder(t *testing.T) {
 	client.rememberAuthUser(1)
 	assert.Equal(t, []int{1, 0, 2}, client.authUserOrder())
 }
+
+func TestIsGoogleDomain(t *testing.T) {
+	tests := []struct {
+		domain string
+		want   bool
+	}{
+		{"google.com", true},
+		{".google.com", true},
+		{".maps.google.com", true},
+		{"google.de", false},
+		{"notgoogle.com", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		if got := isGoogleDomain(tc.domain); got != tc.want {
+			t.Errorf("isGoogleDomain(%q) = %v, want %v", tc.domain, got, tc.want)
+		}
+	}
+}
+
+func TestPreferDomain(t *testing.T) {
+	tests := []struct {
+		candidate, current string
+		want               bool
+	}{
+		{"google.com", ".google.co.uk", true},
+		{".google.co.uk", "google.com", false},
+		{".google.com", ".google.com", true},
+		{".google.de", ".google.co.uk", true},
+	}
+	for _, tc := range tests {
+		if got := preferDomain(tc.candidate, tc.current); got != tc.want {
+			t.Errorf("preferDomain(%q, %q) = %v, want %v", tc.candidate, tc.current, got, tc.want)
+		}
+	}
+}
