@@ -3,6 +3,7 @@ package crypto
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/subtle"
 	"errors"
 )
 
@@ -180,14 +181,7 @@ func DecryptEAX(key, nonce, header, ciphertextAndTag []byte) ([]byte, error) {
 }
 
 func equalBytes(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var v byte
-	for i := range a {
-		v |= a[i] ^ b[i]
-	}
-	return v == 0
+	return subtle.ConstantTimeCompare(a, b) == 1
 }
 
 // aesECBEncrypt is a multi-block AES-ECB encryption (no padding). The input

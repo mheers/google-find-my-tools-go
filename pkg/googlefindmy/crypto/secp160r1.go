@@ -18,6 +18,13 @@ import (
 // secp160r1 is the NIST P-160 curve used by FMDN. It is not in Go's standard
 // library, but because its "a" parameter equals -3 (like all NIST curves), we
 // can reuse crypto/elliptic's generic short-Weierstrass implementation.
+//
+// SECURITY NOTE: crypto/elliptic's generic CurveParams implementation is not
+// constant-time. Since secp160r1 is not available via crypto/ecdh, scalar
+// multiplications with secret scalars (EID generation, foreign tracker
+// decryption) are theoretically exposed to local timing side channels. The
+// reference Python implementation has the same property; this is an accepted
+// limitation of the port, not a regression.
 var secp160r1 = &elliptic.CurveParams{
 	Name:    "secp160r1",
 	P:       bigFromHex("ffffffffffffffffffffffffffffffff7fffffff"),
@@ -42,7 +49,7 @@ func bigFromHex(s string) *big.Int {
 
 // ScalarBaseMult returns x, y = k*G on secp160r1.
 func scalarBaseMult(k []byte) (x, y *big.Int) {
-	return secp160r1.ScalarBaseMult(k)
+	return secp160r1.ScalarBaseMult(k) //nolint:staticcheck // secp160r1 has no crypto/ecdh equivalent; see the curve doc comment.
 }
 
 // PointFromX reconstructs the (x, y) point on secp160r1 from an x-coordinate,

@@ -131,11 +131,11 @@ func DecryptForeignTracker(identityKey, encryptedAndTag, sx []byte, beaconTimeCo
 
 // pointMulScalarBase returns k*G.
 func pointMulScalarBase(k *big.Int) (x, y *big.Int) {
-	return secp160r1.ScalarBaseMult(k.Bytes())
+	return secp160r1.ScalarBaseMult(k.Bytes()) //nolint:staticcheck // secp160r1 has no crypto/ecdh equivalent; see the curve doc comment.
 }
 
 // pointMul returns k*(X,Y) using Go's generic scalar multiplication.
 func pointMul(k *big.Int, x, y *big.Int) (xr, yr *big.Int) {
-	px, py := secp160r1.ScalarMult(x, y, k.Bytes())
+	px, py := secp160r1.ScalarMult(x, y, k.Bytes()) //nolint:staticcheck // secp160r1 has no crypto/ecdh equivalent; see the curve doc comment.
 	return px, py
 }
