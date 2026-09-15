@@ -79,3 +79,13 @@ func TestExtractSharedKeyRejectsMalformedInput(t *testing.T) {
 		})
 	}
 }
+
+func FuzzExtractSharedKey(f *testing.F) {
+	input, _ := validVaultKeysJSON()
+	f.Add(input)
+	f.Add(`{"finder_hw":[{}]}`)
+	f.Add("")
+	f.Fuzz(func(t *testing.T, s string) {
+		_, _ = extractSharedKey(s)
+	})
+}

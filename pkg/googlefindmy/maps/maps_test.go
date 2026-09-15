@@ -1,6 +1,11 @@
 package maps
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -150,4 +155,80 @@ func TestParseContacts_UnixTimestamp(t *testing.T) {
 	assert.Len(t, contacts, 1)
 	// 1719000000 < 100000000000, so it should be kept as-is
 	assert.Equal(t, int64(1719000000), contacts[0].Timestamp)
+}
+
+func sharedContactResponse() []any {
+	contact := []any{
+		[]any{"user1", "http://photo", nil, "Alice"},
+		[]any{nil, []any{nil, 13.4, 52.5}, float64(1719000000000), float64(10), "Berlin"},
+		nil, nil, nil, nil,
+		[]any{"user1", "http://photo", "Alice", "Ali"},
+	}
+	return []any{
+		[]any{contact},
+		nil, nil, nil, nil, nil,
+		"some_value", // auth sentinel, not "GgA="
+		"self_id",
+		nil,
+	}
+}
+
+func TestGetStateSkipsUnauthenticatedAuthUser(t *testing.T) {
+	var hits []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authuser := r.URL.Query().Get("authuser")
+		hits = append(hits, authuser)
+		if authuser == "0" {
+			_, _ = w.Write([]byte(")]}'\n[null,null,null,null,null,null,\"GgA=\"]"))
+			return
+		}
+		body, _ := json.Marshal(sharedContactResponse())
+		_, _ = w.Write(append([]byte(")]}'\n"), body...))
+	}))
+	defer srv.Close()
+
+	client := NewClient(map[string]string{"SID": "x"}).
+		WithHTTPClient(srv.Client()).
+		WithAPIURL(srv.URL)
+
+	contacts, err := client.GetState(context.Background())
+	if err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	assert.Len(t, contacts, 1)
+	assert.Equal(t, "Alice", contacts[0].Name)
+	assert.Equal(t, []string{"0", "1"}, hits)
+}
+
+func TestGetStateAllAuthUsersUnauthenticated(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(")]}'\n[null,null,null,null,null,null,\"GgA=\"]"))
+	}))
+	defer srv.Close()
+
+	client := NewClient(map[string]string{"SID": "x"}).
+		WithHTTPClient(srv.Client()).
+		WithAPIURL(srv.URL)
+
+	_, err := client.GetState(context.Background())
+	if err == nil {
+		t.Fatal("expected an error when every authuser index is unauthenticated")
+	}
+	if !strings.Contains(err.Error(), "cookies may be expired") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assert.Equal(t, 3, hits)
+}
+
+func FuzzParseContacts(f *testing.F) {
+	f.Add([]byte(`[[["u","p",null,"Name"]]]`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var parsed []any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			return
+		}
+		_ = parseContacts(parsed)
+	})
 }

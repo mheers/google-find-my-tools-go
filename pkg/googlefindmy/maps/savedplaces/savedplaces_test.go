@@ -551,3 +551,27 @@ func TestParseEntityListKeepsZeroZeroCoordinates(t *testing.T) {
 		t.Fatalf("got %d places, want 1 (coordinates are present, even at 0,0)", len(places))
 	}
 }
+
+func FuzzParseListSpecs(f *testing.F) {
+	f.Add("Favorites\thttps://www.google.com/maps/placelists/list/abc123")
+	f.Add("!2scustom_ID!")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, input string) {
+		_, _ = ParseListSpecs(input)
+	})
+}
+
+func FuzzParseEntityList(f *testing.F) {
+	f.Add([]byte(`[[null,null,null,null,"Name",null,null,null,[]]]`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var parsed any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			return
+		}
+		arr, ok := parsed.([]any)
+		if !ok {
+			return
+		}
+		_, _ = parseEntityList(arr)
+	})
+}

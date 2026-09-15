@@ -165,11 +165,24 @@ func isEssentialCookie(name string) bool {
 type Client struct {
 	cookies map[string]string
 	hc      *http.Client
+	apiURL  string
 }
 
 // NewClient creates a new Maps client with the given cookies.
 func NewClient(cookies map[string]string) *Client {
-	return &Client{cookies: cookies, hc: httpclient.Default()}
+	return &Client{cookies: cookies, hc: httpclient.Default(), apiURL: mapsAPIURL}
+}
+
+// WithHTTPClient sets a custom HTTP client (useful for testing).
+func (c *Client) WithHTTPClient(hc *http.Client) *Client {
+	c.hc = hc
+	return c
+}
+
+// WithAPIURL sets a custom Maps RPC endpoint (useful for testing).
+func (c *Client) WithAPIURL(u string) *Client {
+	c.apiURL = u
+	return c
 }
 
 const mapsAPIURL = "https://www.google.com/maps/rpc/locationsharing/read"
@@ -209,7 +222,7 @@ func (c *Client) callAPI(ctx context.Context) ([]any, error) {
 }
 
 func (c *Client) tryAuthUser(ctx context.Context, authuser int) ([]any, error) {
-	u := fmt.Sprintf("%s?authuser=%d&hl=en&gl=us&pb=%s", mapsAPIURL, authuser, url.QueryEscape(pb))
+	u := fmt.Sprintf("%s?authuser=%d&hl=en&gl=us&pb=%s", c.apiURL, authuser, url.QueryEscape(pb))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
