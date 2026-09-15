@@ -538,16 +538,16 @@ func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]b
 		log.Printf("[MCS] data message subtype %q does not match app id %q", subtype, creds.GCM.AppID)
 	}
 
-	dhRaw, err := base64.URLEncoding.DecodeString(dhB64)
+	dhRaw, err := decodeBase64URL(dhB64)
 	if err != nil {
 		return nil, fmt.Errorf("decode dh: %w", err)
 	}
-	salt, err := base64.URLEncoding.DecodeString(saltB64)
+	salt, err := decodeBase64URL(saltB64)
 	if err != nil {
 		return nil, fmt.Errorf("decode salt: %w", err)
 	}
 
-	privDER, err := base64.URLEncoding.DecodeString(creds.Keys.Private)
+	privDER, err := decodeBase64URL(creds.Keys.Private)
 	if err != nil {
 		return nil, fmt.Errorf("decode private key: %w", err)
 	}
@@ -574,7 +574,7 @@ func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]b
 		return nil, fmt.Errorf("ecdh: %w", err)
 	}
 
-	authSecret, err := base64.URLEncoding.DecodeString(creds.Keys.Secret)
+	authSecret, err := decodeBase64URL(creds.Keys.Secret)
 	if err != nil {
 		return nil, fmt.Errorf("decode auth secret: %w", err)
 	}
@@ -637,6 +637,15 @@ func decryptWebPushECE(creds *FCMCredentials, msg *fcmpb.DataMessageStanza) ([]b
 		return nil, fmt.Errorf("padding %d exceeds decrypted length %d", padLen, len(decrypted))
 	}
 	return decrypted[2+padLen:], nil
+}
+
+// decodeBase64URL decodes padded and unpadded base64url values. FCM sends
+// some fields unpadded while the Python reference emits padded values.
+func decodeBase64URL(s string) ([]byte, error) {
+	if b, err := base64.URLEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	return base64.RawURLEncoding.DecodeString(s)
 }
 
 func trimPrefix(s, prefix string) string {

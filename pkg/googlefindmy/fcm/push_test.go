@@ -175,6 +175,28 @@ func TestDecryptWebPushECE(t *testing.T) {
 	}
 }
 
+// TestDecryptWebPushECEAcceptsUnpaddedBase64 guards interoperability with FCM,
+// which sends base64url values without padding while Python emits padding.
+func TestDecryptWebPushECEAcceptsUnpaddedBase64(t *testing.T) {
+	creds, clientPriv := testPushCredentials(t)
+	want := []byte("unpadded-payload")
+	push := encryptTestPush(t, creds, clientPriv, want)
+
+	for _, a := range push.msg.GetAppData() {
+		a.Value = proto.String(strings.TrimRight(a.GetValue(), "="))
+	}
+	creds.Keys.Private = strings.TrimRight(creds.Keys.Private, "=")
+	creds.Keys.Secret = strings.TrimRight(creds.Keys.Secret, "=")
+
+	got, err := decryptWebPushECE(creds, push.msg)
+	if err != nil {
+		t.Fatalf("decryptWebPushECE: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("decrypted = %q, want %q", got, want)
+	}
+}
+
 func TestDecryptWebPushECEDoesNotLogSecrets(t *testing.T) {
 	creds, clientPriv := testPushCredentials(t)
 	payload := []byte(`{"location":"48.1,11.5"}`)
