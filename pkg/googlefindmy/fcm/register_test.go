@@ -3,12 +3,16 @@ package fcm
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -262,5 +266,73 @@ func TestGenerateKeysArePaddedBase64URL(t *testing.T) {
 		if _, err := decodeBase64URL(v); err != nil {
 			t.Errorf("%s value %q does not decode: %v", name, v, err)
 		}
+	}
+}
+
+func TestRetryRetriesTransientErrors(t *testing.T) {
+	attempts := 0
+	err := retryWith(context.Background(), retryConfig{attempts: 5, baseDelay: time.Millisecond, maxDelay: 5 * time.Millisecond}, func() error {
+		attempts++
+		if attempts < 3 {
+			return &httpStatusError{Op: "test", Status: http.StatusServiceUnavailable}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retryWith: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestRetryStopsOnPermanentError(t *testing.T) {
+	attempts := 0
+	err := retryWith(context.Background(), retryConfig{attempts: 5, baseDelay: time.Millisecond, maxDelay: 5 * time.Millisecond}, func() error {
+		attempts++
+		return &httpStatusError{Op: "test", Status: http.StatusBadRequest, Body: "blocked"}
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (permanent errors must not be retried)", attempts)
+	}
+}
+
+func TestRetryHonorsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := retryWith(ctx, retryConfig{attempts: 3, baseDelay: time.Millisecond, maxDelay: time.Millisecond}, func() error {
+		t.Error("fn must not run with a cancelled context")
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestIsTransient(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"429", &httpStatusError{Status: http.StatusTooManyRequests}, true},
+		{"500", &httpStatusError{Status: http.StatusInternalServerError}, true},
+		{"400", &httpStatusError{Status: http.StatusBadRequest}, false},
+		{"wrapped 503", fmt.Errorf("wrap: %w", &httpStatusError{Status: http.StatusServiceUnavailable}), true},
+		{"transient marker", transient(errors.New("PHONE_REGISTRATION_ERROR")), true},
+		{"context deadline", context.DeadlineExceeded, false},
+		{"network", &net.DNSError{IsTimeout: true}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTransient(tc.err); got != tc.want {
+				t.Fatalf("isTransient(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

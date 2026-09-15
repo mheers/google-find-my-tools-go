@@ -15,13 +15,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
+	mrand "math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/httpclient"
@@ -307,7 +311,115 @@ func parseExpiresIn(s string) (int, error) {
 	return n, nil
 }
 
+// httpStatusError captures a non-2xx response. Only rate limiting and 5xx
+// responses are worth retrying.
+type httpStatusError struct {
+	Op     string
+	Status int
+	Body   string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("%s: status %d: %s", e.Op, e.Status, e.Body)
+}
+
+func (e *httpStatusError) transient() bool {
+	return e.Status == http.StatusTooManyRequests || e.Status >= 500
+}
+
+// transientError marks an error that is worth retrying even though it is not
+// an HTTP status error (e.g. GCM's "Error" text response).
+type transientError struct{ err error }
+
+func (e transientError) Error() string { return e.err.Error() }
+func (e transientError) Unwrap() error { return e.err }
+
+func transient(err error) error { return transientError{err: err} }
+
+// isTransient reports whether an error is worth retrying. Context errors and
+// permanent HTTP errors are not.
+func isTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var te transientError
+	if errors.As(err, &te) {
+		return true
+	}
+	var he *httpStatusError
+	if errors.As(err, &he) {
+		return he.transient()
+	}
+	var ne net.Error
+	return errors.As(err, &ne)
+}
+
+// retryConfig controls the retry loop.
+type retryConfig struct {
+	attempts  int
+	baseDelay time.Duration
+	maxDelay  time.Duration
+}
+
+var fcmRetry = retryConfig{attempts: 8, baseDelay: time.Second, maxDelay: 30 * time.Second}
+
+// retryWith calls fn with exponential backoff (plus jitter) until it succeeds,
+// fails with a non-transient error, or the retry budget is exhausted.
+func retryWith(ctx context.Context, cfg retryConfig, fn func() error) error {
+	delay := cfg.baseDelay
+	var lastErr error
+	for attempt := 1; attempt <= cfg.attempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isTransient(err) || attempt == cfg.attempts {
+			break
+		}
+
+		wait := delay/2 + time.Duration(mrand.Int64N(int64(delay/2)+1))
+		slog.Debug("retrying transient fcm error", "attempt", attempt, "err", err, "delay", wait)
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay *= 2
+		if delay > cfg.maxDelay {
+			delay = cfg.maxDelay
+		}
+	}
+	return lastErr
+}
+
+func retry(ctx context.Context, fn func() error) error {
+	return retryWith(ctx, fcmRetry, fn)
+}
+
+// gcmCheckin performs GCM check-in with retries for transient failures.
 func gcmCheckin(ctx context.Context, hc *http.Client, cfg Config, androidID, securityToken uint64) (*fcmpb.AndroidCheckinResponse, error) {
+	var out *fcmpb.AndroidCheckinResponse
+	err := retry(ctx, func() error {
+		var err error
+		out, err = gcmCheckinOnce(ctx, hc, cfg, androidID, securityToken)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func gcmCheckinOnce(ctx context.Context, hc *http.Client, cfg Config, androidID, securityToken uint64) (*fcmpb.AndroidCheckinResponse, error) {
 	platform := fcmpb.ChromeBuildProto_PLATFORM_LINUX
 	chromeVerStr := cfg.ChromeVersion
 	if chromeVerStr == "" {
@@ -361,7 +473,7 @@ func gcmCheckin(ctx context.Context, hc *http.Client, cfg Config, androidID, sec
 		return nil, fmt.Errorf("checkin read: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("checkin status %d: %s", resp.StatusCode, string(respBody))
+		return nil, &httpStatusError{Op: "gcm checkin", Status: resp.StatusCode, Body: string(respBody)}
 	}
 
 	out := &fcmpb.AndroidCheckinResponse{}
@@ -372,7 +484,7 @@ func gcmCheckin(ctx context.Context, hc *http.Client, cfg Config, androidID, sec
 }
 
 func gcmRegister(ctx context.Context, hc *http.Client, cfg Config, androidID, securityToken uint64) (*GCMCredentials, error) {
-	gcmAppID := fmt.Sprintf("wp:%s#%x%x", cfg.BundleID, time.Now().UnixNano(), androidID)
+	gcmAppID := fmt.Sprintf("wp:%s#%s", cfg.BundleID, uuid.NewString())
 
 	data := url.Values{}
 	data.Set("app", "org.chromium.linux")
@@ -398,11 +510,11 @@ func gcmRegister(ctx context.Context, hc *http.Client, cfg Config, androidID, se
 		return nil, fmt.Errorf("gcm register read: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gcm register status %d: %s", resp.StatusCode, string(body))
+		return nil, &httpStatusError{Op: "gcm register", Status: resp.StatusCode, Body: string(body)}
 	}
 
 	if bytes.Contains(body, []byte("Error")) {
-		return nil, fmt.Errorf("gcm register error: %s", string(body))
+		return nil, transient(fmt.Errorf("gcm register error: %s", string(body)))
 	}
 	parts := strings.SplitN(strings.TrimSpace(string(body)), "=", 2)
 	if len(parts) != 2 || parts[0] != "token" {
@@ -418,23 +530,19 @@ func gcmRegister(ctx context.Context, hc *http.Client, cfg Config, androidID, se
 	}, nil
 }
 
-// gcmRegisterWithRetry wraps gcmRegister with retries (up to 30 attempts)
-// to handle transient PHONE_REGISTRATION_ERROR responses from Google's servers.
+// gcmRegisterWithRetry retries gcmRegister on transient failures (e.g. the
+// PHONE_REGISTRATION_ERROR text response) with exponential backoff.
 func gcmRegisterWithRetry(ctx context.Context, hc *http.Client, cfg Config, androidID, securityToken uint64) (*GCMCredentials, error) {
-	var lastErr error
-	for i := 0; i < 30; i++ {
-		creds, err := gcmRegister(ctx, hc, cfg, androidID, securityToken)
-		if err == nil {
-			return creds, nil
-		}
-		lastErr = err
-		select {
-		case <-time.After(time.Second):
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	var creds *GCMCredentials
+	err := retry(ctx, func() error {
+		var err error
+		creds, err = gcmRegister(ctx, hc, cfg, androidID, securityToken)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gcm register failed: %w", err)
 	}
-	return nil, fmt.Errorf("gcm register failed after 30 attempts: %w", lastErr)
+	return creds, nil
 }
 
 func fcmInstall(ctx context.Context, hc *http.Client, cfg Config) (*Installation, error) {
@@ -463,6 +571,19 @@ func fcmInstall(ctx context.Context, hc *http.Client, cfg Config) (*Installation
 		return nil, fmt.Errorf("marshal install payload: %w", err)
 	}
 
+	var install *Installation
+	err = retry(ctx, func() error {
+		var err error
+		install, err = doFCMInstall(ctx, hc, cfg, fid64, hbHeader, payloadBytes)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return install, nil
+}
+
+func doFCMInstall(ctx context.Context, hc *http.Client, cfg Config, fid64, hbHeader string, payloadBytes []byte) (*Installation, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		cfg.InstallURL+"projects/"+cfg.ProjectID+"/installations",
 		bytes.NewReader(payloadBytes))
@@ -487,7 +608,7 @@ func fcmInstall(ctx context.Context, hc *http.Client, cfg Config) (*Installation
 		return nil, fmt.Errorf("fcm install read: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fcm install status %d: %s", resp.StatusCode, string(body))
+		return nil, &httpStatusError{Op: "fcm install", Status: resp.StatusCode, Body: string(body)}
 	}
 
 	var result struct {
@@ -552,6 +673,19 @@ func fcmRegister(ctx context.Context, hc *http.Client, cfg Config, gcm *GCMCrede
 		return nil, fmt.Errorf("marshal registration payload: %w", err)
 	}
 
+	var raw json.RawMessage
+	err = retry(ctx, func() error {
+		var err error
+		raw, err = doFCMRegister(ctx, hc, cfg, gcm, install, payloadBytes)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+func doFCMRegister(ctx context.Context, hc *http.Client, cfg Config, gcm *GCMCredentials, install *Installation, payloadBytes []byte) (json.RawMessage, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		cfg.FCMRegURL+"projects/"+cfg.ProjectID+"/registrations",
 		bytes.NewReader(payloadBytes))
@@ -576,7 +710,7 @@ func fcmRegister(ctx context.Context, hc *http.Client, cfg Config, gcm *GCMCrede
 		return nil, fmt.Errorf("fcm register read: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fcm register status %d: %s", resp.StatusCode, string(body))
+		return nil, &httpStatusError{Op: "fcm register", Status: resp.StatusCode, Body: string(body)}
 	}
 
 	var result struct {
