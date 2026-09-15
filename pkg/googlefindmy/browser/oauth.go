@@ -304,7 +304,7 @@ func RequestSharedKey(ctx context.Context, cfg chrome.Config) (string, error) {
 	// screen lock for the selected device") before it releases the vault
 	// keys, so the wait is interactive and honors the caller's deadline;
 	// otherwise it gets the same window as the sign-in.
-	slog.Info("enter the screen lock PIN of the device in the Chrome window to unlock the E2EE vault")
+	slog.Info("enter the screen lock PIN in the Chrome window and click Next to unlock the E2EE vault")
 	slog.Info("waiting for E2EE vault keys...")
 	keysDeadline := deadlineFromContext(ctx, defaultLoginTimeout)
 	var vaultKeysJSON string
@@ -323,7 +323,7 @@ func RequestSharedKey(ctx context.Context, cfg chrome.Config) (string, error) {
 			break
 		}
 		if time.Now().After(keysDeadline) {
-			return "", fmt.Errorf("%w waiting for E2EE vault keys (enter the device screen lock PIN in the Chrome window)", ErrTimeout)
+			return "", fmt.Errorf("%w waiting for E2EE vault keys (enter the device screen lock PIN in the Chrome window and click Next)", ErrTimeout)
 		}
 		if time.Since(lastProgress) >= progressInterval {
 			slog.Info("still waiting for E2EE vault keys", "remaining", time.Until(keysDeadline).Round(time.Second))
