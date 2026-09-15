@@ -2,7 +2,12 @@ package savedplaces
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/network"
@@ -10,6 +15,21 @@ import (
 
 	"github.com/mheers/google-find-my-tools-go/pkg/googlefindmy/chrome"
 )
+
+// The Saved Lists UI is driven by Google Maps' markup; keep the selectors in
+// one place and prefer the link-harvesting fallback when they stop matching.
+const (
+	savedNavSelector   = `[jsaction*="navigationrail.saved"]`
+	yourPlacesSelector = `[aria-label="Your places"] .RcCsl .CsEnBe`
+	listNameSelector   = `.Io6YTe`
+	listDetailSelector = `.gSkmPd`
+)
+
+// listLink is a saved-list link harvested from the page.
+type listLink struct {
+	Href string `json:"href"`
+	Name string `json:"name"`
+}
 
 // DiscoverListSpecs uses the authenticated Maps Saved Lists page to discover
 // list IDs. It is separate from the HTTP exporter: discovery is occasional,
@@ -30,21 +50,33 @@ func DiscoverListSpecs(ctx context.Context, cookies map[string]string) ([]ListSp
 		return nil, fmt.Errorf("set Maps cookies: %w", err)
 	}
 	if err := openSavedLists(browserCtx); err != nil {
-		return nil, err
+		return nil, withScreenshot(browserCtx, err)
 	}
 	names, err := discoverListNames(browserCtx)
 	if err != nil {
-		return nil, err
+		return nil, withScreenshot(browserCtx, err)
 	}
+
 	if len(names) == 0 {
-		return nil, fmt.Errorf("no saved lists found in Google Maps")
+		// Fallback: harvest saved-list links directly from the DOM. The URL
+		// pattern is parsed by extractListID, so this keeps working when the
+		// aria-label chain changes.
+		links, err := discoverListLinks(browserCtx)
+		if err != nil {
+			return nil, withScreenshot(browserCtx, err)
+		}
+		specs := specsFromListLinks(links)
+		if len(specs) == 0 {
+			return nil, withScreenshot(browserCtx, errors.New("no saved lists found in Google Maps"))
+		}
+		return specs, nil
 	}
 
 	var specs []ListSpec
 	seen := make(map[string]bool)
 	for _, name := range names {
 		if err := clickSavedList(browserCtx, name); err != nil {
-			return nil, fmt.Errorf("open saved list %q: %w", name, err)
+			return nil, withScreenshot(browserCtx, fmt.Errorf("open saved list %q: %w", name, err))
 		}
 		var pageURL string
 		if err := chromedp.Run(browserCtx, chromedp.Location(&pageURL)); err != nil {
@@ -59,10 +91,51 @@ func DiscoverListSpecs(ctx context.Context, cookies map[string]string) ([]ListSp
 			specs = append(specs, ListSpec{ID: id, Name: name})
 		}
 		if err := openSavedLists(browserCtx); err != nil {
-			return nil, err
+			return nil, withScreenshot(browserCtx, err)
 		}
 	}
 	return specs, nil
+}
+
+// specsFromListLinks extracts list specs from harvested links, skipping
+// duplicates and unparseable URLs.
+func specsFromListLinks(links []listLink) []ListSpec {
+	var specs []ListSpec
+	seen := make(map[string]bool)
+	for _, link := range links {
+		id, err := extractListID(link.Href)
+		if err != nil {
+			continue
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		specs = append(specs, ListSpec{ID: id, Name: strings.TrimSpace(link.Name)})
+	}
+	return specs
+}
+
+// withScreenshot attaches the path of a failure screenshot to err when one
+// could be captured.
+func withScreenshot(ctx context.Context, err error) error {
+	path := screenshotOnFailure(ctx, "saved-lists")
+	if path == "" {
+		return err
+	}
+	return fmt.Errorf("%w (screenshot: %s)", err, path)
+}
+
+func screenshotOnFailure(ctx context.Context, label string) string {
+	var buf []byte
+	if err := chromedp.Run(ctx, chromedp.CaptureScreenshot(&buf)); err != nil {
+		return ""
+	}
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("googlefindmy-%s-%d.png", label, time.Now().Unix()))
+	if err := os.WriteFile(path, buf, 0o600); err != nil {
+		return ""
+	}
+	return path
 }
 
 func setBrowserCookies(ctx context.Context, cookies map[string]string) error {
@@ -83,22 +156,25 @@ func openSavedLists(ctx context.Context) error {
 	if err := chromedp.Run(ctx, chromedp.Navigate("https://www.google.com/maps/")); err != nil {
 		return fmt.Errorf("open Google Maps: %w", err)
 	}
-	if err := chromedp.Run(ctx, chromedp.PollFunction(`() => !!document.querySelector('[jsaction*="navigationrail.saved"]')`, nil, chromedp.WithPollingInterval(250*time.Millisecond), chromedp.WithPollingTimeout(30*time.Second))); err != nil {
+	navJS := fmt.Sprintf(`() => !!document.querySelector(%q)`, savedNavSelector)
+	if err := chromedp.Run(ctx, chromedp.PollFunction(navJS, nil, chromedp.WithPollingInterval(250*time.Millisecond), chromedp.WithPollingTimeout(30*time.Second))); err != nil {
 		return fmt.Errorf("wait for Google Maps: %w", err)
 	}
-	var clicked bool
-	if err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
-		const button = document.querySelector('[jsaction*="navigationrail.saved"]');
+	clickJS := fmt.Sprintf(`(() => {
+		const button = document.querySelector(%q);
 		if (!button) return false;
 		button.click();
 		return true;
-	})()`, &clicked)); err != nil || !clicked {
-		if err != nil {
-			return fmt.Errorf("open Saved lists: %w", err)
-		}
+	})()`, savedNavSelector)
+	var clicked bool
+	if err := chromedp.Run(ctx, chromedp.Evaluate(clickJS, &clicked)); err != nil {
+		return fmt.Errorf("open Saved lists: %w", err)
+	}
+	if !clicked {
 		return fmt.Errorf("open Saved lists: button not found")
 	}
-	if err := chromedp.Run(ctx, chromedp.PollFunction(`() => !!document.querySelector('[aria-label="Your places"] .CsEnBe')`, nil, chromedp.WithPollingInterval(250*time.Millisecond), chromedp.WithPollingTimeout(30*time.Second))); err != nil {
+	placesJS := fmt.Sprintf(`() => !!document.querySelector(%q)`, yourPlacesSelector)
+	if err := chromedp.Run(ctx, chromedp.PollFunction(placesJS, nil, chromedp.WithPollingInterval(250*time.Millisecond), chromedp.WithPollingTimeout(30*time.Second))); err != nil {
 		return fmt.Errorf("wait for Saved lists: %w", err)
 	}
 	return nil
@@ -106,29 +182,49 @@ func openSavedLists(ctx context.Context) error {
 
 func discoverListNames(ctx context.Context) ([]string, error) {
 	var names []string
-	if err := chromedp.Run(ctx, chromedp.Evaluate(`(() => Array.from(document.querySelectorAll('[aria-label="Your places"] .RcCsl .CsEnBe'))
+	js := fmt.Sprintf(`(() => Array.from(document.querySelectorAll(%q))
 		.map(button => {
-			const name = button.querySelector('.Io6YTe')?.textContent?.trim() || '';
-			const detail = button.querySelector('.gSkmPd')?.textContent || '';
+			const name = button.querySelector(%q)?.textContent?.trim() || '';
+			const detail = button.querySelector(%q)?.textContent || '';
 			return {name, detail};
 		})
 		.filter(list => list.name && /places?/i.test(list.detail))
 		.filter(list => !/0 places/i.test(list.detail))
-		.map(list => list.name))()`, &names)); err != nil {
+		.map(list => list.name))()`, yourPlacesSelector, listNameSelector, listDetailSelector)
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &names)); err != nil {
 		return nil, fmt.Errorf("read Saved lists: %w", err)
 	}
 	return names, nil
 }
 
+// discoverListLinks harvests saved-list links from the page. It is the
+// fallback used when the aria-label based selectors no longer match.
+func discoverListLinks(ctx context.Context) ([]listLink, error) {
+	var raw []string
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`(() => Array.from(document.querySelectorAll('a[href*="/maps/placelists/list/"]'))
+		.map(a => JSON.stringify({href: a.href, name: a.textContent || ''})))()`, &raw)); err != nil {
+		return nil, fmt.Errorf("read saved list links: %w", err)
+	}
+	links := make([]listLink, 0, len(raw))
+	for _, r := range raw {
+		var link listLink
+		if err := json.Unmarshal([]byte(r), &link); err != nil {
+			continue
+		}
+		links = append(links, link)
+	}
+	return links, nil
+}
+
 func clickSavedList(ctx context.Context, name string) error {
 	var clicked bool
 	js := fmt.Sprintf(`((wanted) => {
-		for (const button of document.querySelectorAll('[aria-label="Your places"] .RcCsl .CsEnBe')) {
-			const label = button.querySelector('.Io6YTe')?.textContent?.trim() || '';
+		for (const button of document.querySelectorAll(%q)) {
+			const label = button.querySelector(%q)?.textContent?.trim() || '';
 			if (label === wanted) { button.click(); return true; }
 		}
 		return false;
-	})(%q)`, name)
+	})(%q)`, yourPlacesSelector, listNameSelector, name)
 	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &clicked)); err != nil {
 		return err
 	}
