@@ -208,6 +208,60 @@ func TestDecryptWebPushECEAcceptsUnpaddedBase64(t *testing.T) {
 	}
 }
 
+// TestDecryptWebPushECEAcceptsExtraCryptoKeyParameters guards the FCM header
+// format change observed in October 2026: crypto-key now carries a second
+// `;`-separated parameter (p256ecdsa=...). Decoding the whole header as
+// base64 failed with "illegal base64 data at input byte N", which silently
+// dropped every location push.
+func TestDecryptWebPushECEAcceptsExtraCryptoKeyParameters(t *testing.T) {
+	creds, clientPriv := testPushCredentials(t)
+	want := []byte("extra-parameters")
+	push := encryptTestPush(t, creds, clientPriv, want)
+
+	for _, a := range push.msg.GetAppData() {
+		switch a.GetKey() {
+		case "crypto-key":
+			a.Value = proto.String(a.GetValue() + ";p256ecdsa=" + base64.RawURLEncoding.EncodeToString([]byte("other-key")))
+		case "encryption":
+			a.Value = proto.String(a.GetValue() + ";unknown=value")
+		}
+	}
+
+	pc, err := newPushCrypto(creds)
+	if err != nil {
+		t.Fatalf("newPushCrypto: %v", err)
+	}
+	got, err := pc.decrypt(push.msg)
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("decrypted = %q, want %q", got, want)
+	}
+}
+
+func TestHeaderParam(t *testing.T) {
+	cases := []struct {
+		value string
+		name  string
+		want  string
+	}{
+		{"dh=abc", "dh", "abc"},
+		{"dh=abc;p256ecdsa=def", "dh", "abc"},
+		{"dh=abc; p256ecdsa=def", "dh", "abc"},
+		{"salt=abc;p256ecdsa=def", "salt", "abc"},
+		{"salt=abc;unknown=value", "salt", "abc"},
+		{"abc", "dh", "abc"},
+		{"p256ecdsa=def", "dh", ""},
+		{"", "dh", ""},
+	}
+	for _, tc := range cases {
+		if got := headerParam(tc.value, tc.name); got != tc.want {
+			t.Errorf("headerParam(%q, %q) = %q, want %q", tc.value, tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestDecryptWebPushECEDoesNotLogSecrets(t *testing.T) {
 	creds, clientPriv := testPushCredentials(t)
 	payload := []byte(`{"location":"48.1,11.5"}`)

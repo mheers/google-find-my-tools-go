@@ -21,6 +21,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -85,6 +86,10 @@ type MCSClient struct {
 	cryptoOnce sync.Once
 	crypto     *pushCrypto
 	cryptoErr  error
+
+	// decryptWarnOnce limits the "decrypt failed" warning to the first
+	// message per client so a broken push format is visible without spamming.
+	decryptWarnOnce sync.Once
 }
 
 // NewMCSClient creates a new MCS client.
@@ -551,9 +556,9 @@ func (p *pushCrypto) decrypt(msg *fcmpb.DataMessageStanza) ([]byte, error) {
 	for _, a := range msg.GetAppData() {
 		switch a.GetKey() {
 		case "crypto-key":
-			dhB64 = trimPrefix(a.GetValue(), "dh=")
+			dhB64 = headerParam(a.GetValue(), "dh")
 		case "encryption":
-			saltB64 = trimPrefix(a.GetValue(), "salt=")
+			saltB64 = headerParam(a.GetValue(), "salt")
 		case "subtype":
 			subtype = a.GetValue()
 		}
@@ -562,11 +567,11 @@ func (p *pushCrypto) decrypt(msg *fcmpb.DataMessageStanza) ([]byte, error) {
 		return nil, errors.New("missing crypto-key or encryption")
 	}
 
-	// The subtype matches the FCM sender's AppID. Log a mismatch so misconfig
-	// is visible, but still attempt decryption: the consumer filters messages
-	// by request UUID.
+	// The subtype matches the FCM sender's AppID. handleDataMessage skips
+	// messages for other apps before calling decrypt; keep the check here as
+	// a guard for direct callers.
 	if subtype != "" && p.expectedSubtype != "" && subtype != p.expectedSubtype {
-		slog.Debug("mcs subtype mismatch", "subtype", subtype, "app_id", p.expectedSubtype)
+		return nil, fmt.Errorf("mcs subtype mismatch: %q != %q", subtype, p.expectedSubtype)
 	}
 
 	dhRaw, err := decodeBase64URL(dhB64)
@@ -657,8 +662,25 @@ func (c *MCSClient) handleDataMessage(msg *fcmpb.DataMessageStanza) string {
 		slog.Debug("mcs decrypt failed", "err", err)
 		return persistentID
 	}
+
+	// The shared MCS channel can carry data messages for other apps/services
+	// registered under the same Android ID. Decrypting one with our key
+	// material is guaranteed to fail, so skip it instead of logging a decrypt
+	// error every time.
+	if subtype := appDataValue(msg, "subtype"); subtype != "" && pc.expectedSubtype != "" && subtype != pc.expectedSubtype {
+		slog.Debug("mcs skipping message for another app", "subtype", subtype, "app_id", pc.expectedSubtype)
+		return persistentID
+	}
+
 	decrypted, err := pc.decrypt(msg)
 	if err != nil {
+		// A silent decrypt failure looks exactly like a device that never
+		// answers. Log the first one per client at Warn so a header/format
+		// change is visible without flooding the log for every push.
+		c.decryptWarnOnce.Do(func() {
+			slog.Warn("mcs decrypt failed; location pushes will be ignored",
+				"err", err, "app_data", len(msg.GetAppData()), "raw_data_len", len(msg.GetRawData()))
+		})
 		slog.Debug("mcs decrypt failed", "err", err)
 		return persistentID
 	}
@@ -692,9 +714,30 @@ func decodeBase64URL(s string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(s)
 }
 
-func trimPrefix(s, prefix string) string {
-	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
-		return s[len(prefix):]
+// appDataValue returns the value of the named FCM app_data entry, or "".
+func appDataValue(msg *fcmpb.DataMessageStanza, key string) string {
+	for _, a := range msg.GetAppData() {
+		if a.GetKey() == key {
+			return a.GetValue()
+		}
 	}
-	return s
+	return ""
+}
+
+// headerParam extracts the named parameter from a `;`-separated FCM push
+// header value. Google appends a second parameter to crypto-key (observed as
+// "dh=<key>;p256ecdsa=<key>"); decoding the whole value fails with
+// "illegal base64 data at input byte N". A bare, unprefixed value is
+// tolerated for older push implementations.
+func headerParam(value, name string) string {
+	for _, part := range strings.Split(value, ";") {
+		part = strings.TrimSpace(part)
+		if rest, ok := strings.CutPrefix(part, name+"="); ok {
+			return rest
+		}
+	}
+	if !strings.Contains(value, ";") && !strings.Contains(value, "=") {
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
