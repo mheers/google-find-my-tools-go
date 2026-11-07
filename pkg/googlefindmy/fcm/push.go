@@ -672,6 +672,14 @@ func (c *MCSClient) handleDataMessage(msg *fcmpb.DataMessageStanza) string {
 		return persistentID
 	}
 
+	// Control messages (for example deleted_messages) carry no encrypted
+	// payload. They are normal traffic, not a decryption failure.
+	if appDataValue(msg, "crypto-key") == "" || appDataValue(msg, "encryption") == "" {
+		slog.Debug("mcs skipping data message without an encrypted payload",
+			"app_data", len(msg.GetAppData()), "raw_data_len", len(msg.GetRawData()))
+		return persistentID
+	}
+
 	decrypted, err := pc.decrypt(msg)
 	if err != nil {
 		// A silent decrypt failure looks exactly like a device that never

@@ -325,6 +325,26 @@ func TestHandleDataMessageDoesNotLogAppData(t *testing.T) {
 	}
 }
 
+func TestHandleDataMessageSkipsControlMessage(t *testing.T) {
+	creds, _ := testPushCredentials(t)
+
+	called := false
+	client := NewMCSClient(creds, func([]byte, string) { called = true })
+	msg := &fcmpb.DataMessageStanza{
+		PersistentId: proto.String("persistent-2"),
+		AppData: []*fcmpb.AppData{
+			{Key: proto.String("deleted_messages"), Value: proto.String("[]")},
+		},
+	}
+
+	if got := client.handleDataMessage(msg); got != "persistent-2" {
+		t.Fatalf("persistent id = %q, want persistent-2", got)
+	}
+	if called {
+		t.Error("handler was called for a control message without an encrypted payload")
+	}
+}
+
 func TestDecodeVarint32RoundTrip(t *testing.T) {
 	values := []uint32{0, 1, 127, 128, 16383, 16384, 1 << 21, ^uint32(0)}
 	for _, want := range values {
